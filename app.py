@@ -1,18 +1,41 @@
 # app.py
 
 import os
+
+if os.environ.get("RENDER", "") == "true":
+    import eventlet
+    eventlet.monkey_patch()
+
 import random
 import argparse
+import logging
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, leave_room, emit
 from dotenv import load_dotenv
 import openai
+from werkzeug.middleware.proxy_fix import ProxyFix
+from collections import deque
+
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # --- Initialization ---
 load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'a_very_secret_key_that_should_be_changed')
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*')
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=CORS_ORIGINS,
+    async_mode="eventlet" if os.environ.get("RENDER", "") == "true" else None,
+    ping_timeout=60,
+    ping_interval=25
+)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # --- Game State Management ---
@@ -54,7 +77,7 @@ def get_ai_answer(question, conversation_history):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error calling OpenAI: {e}")
+        logger.error(f"Error calling OpenAI: {e}")
         return "Uh, I'm not sure how to answer that. Let me think."
 
 def get_ai_question(conversation_history, available_targets):
@@ -81,7 +104,7 @@ def get_ai_question(conversation_history, available_targets):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error calling OpenAI for question: {e}")
+        logger.error(f"Error calling OpenAI for question: {e}")
         return "Is the location considered a tourist destination?"
 
 def create_ai_player():
@@ -125,7 +148,7 @@ def get_ai_location_guess(conversation_history):
         guess = guess.replace('.', '').replace('!', '').replace('?', '').strip()
         return guess
     except Exception as e:
-        print(f"Error calling OpenAI for location guess: {e}")
+        logger.error(f"Error calling OpenAI for location guess: {e}")
         return random.choice(LOCATIONS)
 
 def check_ai_guess(room, ai_sid):
@@ -168,6 +191,7 @@ def check_ai_guess(room, ai_sid):
                     'ai_guess': ai_guess
                 }, room=sid)
         
+        logger.info(win_log)
         return True
     else:
         # Wrong guess, continue the game
@@ -178,6 +202,7 @@ def check_ai_guess(room, ai_sid):
             'log': guess_log + "\n" + wrong_log
         }, room=room)
         
+        logger.info(wrong_log)
         return False
 
 # --- Flask Routes ---
@@ -188,198 +213,212 @@ def index():
     return render_template('game.html')
 
 # --- SocketIO Event Handlers ---
+@socketio.on_error_default
+def default_error_handler(e):
+    logger.error(f"SocketIO error: {e}")
+    emit('game_update', {'log': 'An internal error occurred. Please try again.'})
+
 @socketio.on('join')
 def on_join(data):
-    username = data['username']
-    room = "main" # Hardcoded room for simplicity
-    join_room(room)
-
-    if room not in games:
-        games[room] = {
-            "players": {},
-            "state": "waiting",
-            "conversation": [],
-            "ai_player": None
-        }
-        
-        # Create AI player automatically
-        ai_player = create_ai_player()
-        games[room]["ai_player"] = ai_player
-        games[room]["players"][ai_player["sid"]] = {
-            "username": ai_player["username"], 
-            "is_ai": True
-        }
-        print(f"AI player {ai_player['username']} created automatically")
-    
-    games[room]["players"][request.sid] = {"username": username, "is_ai": False}
-    
-    print(f"{username} has joined the room {room}. Current players: {len(games[room]['players'])}")
-    emit('game_update', {'players': [p['username'] for p in games[room]['players'].values()], 'log': "A new player has joined."}, room=room)
+    try:
+        username = data['username']
+        room = "main"
+        join_room(room)
+        if room not in games:
+            games[room] = {
+                "players": {},
+                "state": "waiting",
+                "conversation": deque(maxlen=100),
+                "ai_player": None
+            }
+            ai_player = create_ai_player()
+            games[room]["ai_player"] = ai_player
+            games[room]["players"][ai_player["sid"]] = {
+                "username": ai_player["username"],
+                "is_ai": True
+            }
+            logger.info(f"AI player {ai_player['username']} created automatically")
+        games[room]["players"][request.sid] = {"username": username, "is_ai": False}
+        logger.info(f"{username} has joined the room {room}. Current players: {len(games[room]['players'])}")
+        emit('game_update', {'players': [p['username'] for p in games[room]['players'].values()], 'log': "A new player has joined."}, room=room)
+    except Exception as e:
+        logger.error(f"Error in on_join: {e}")
+        emit('game_update', {'log': 'An error occurred while joining the game.'}, room=request.sid)
 
 
 @socketio.on('start_game')
 def on_start_game():
-    room = "main"
-    if games[room]['state'] == 'waiting' and len(games[room]['players']) >= 2: # Min 2 players (1 human + 1 AI)
-        # --- Assign Roles ---
-        player_sids = list(games[room]['players'].keys())
-        outsider_sid = random.choice(player_sids)
-        location = random.choice(LOCATIONS)
-        
-        games[room]['state'] = 'playing'
-        games[room]['location'] = location
-        games[room]['outsider_sid'] = outsider_sid
-        games[room]['turn'] = 0 # Index in the player_sids list
-        games[room]['player_order'] = player_sids
-
-        # --- Send roles to each player ---
-        for sid, player in games[room]['players'].items():
-            is_outsider = (sid == outsider_sid)
-            
-            role_data = {
-                'is_outsider': is_outsider,
-                'location': "???" if is_outsider else location
-            }
-            if not player['is_ai']:  # Only send to human players
-                emit('game_started', role_data, room=sid)
-
-        # --- Announce game start to everyone ---
-        first_player_sid = games[room]['player_order'][games[room]['turn']]
-        first_player_name = games[room]['players'][first_player_sid]['username']
-        start_log = f"The game has started! The first turn goes to {first_player_name}."
-        games[room]['conversation'].append(start_log)
-        emit('game_update', {
-            'players': [p['username'] for p in games[room]['players'].values()], 
-            'log': start_log,
-            'current_turn': first_player_name
-        }, room=room)
-        
-        # If AI goes first, make it ask a question
-        if games[room]['players'][first_player_sid]['is_ai']:
-            socketio.sleep(0.5)  # Small delay to make it feel natural
-            ai_ask_question(room, first_player_sid)
+    try:
+        room = "main"
+        if games[room]['state'] == 'waiting' and len(games[room]['players']) >= 2:
+            player_sids = list(games[room]['players'].keys())
+            outsider_sid = random.choice(player_sids)
+            location = random.choice(LOCATIONS)
+            games[room]['state'] = 'playing'
+            games[room]['location'] = location
+            games[room]['outsider_sid'] = outsider_sid
+            games[room]['turn'] = 0
+            games[room]['player_order'] = deque(player_sids)
+            for sid, player in games[room]['players'].items():
+                is_outsider = (sid == outsider_sid)
+                role_data = {
+                    'is_outsider': is_outsider,
+                    'location': "???" if is_outsider else location
+                }
+                if not player['is_ai']:
+                    emit('game_started', role_data, room=sid)
+            first_player_sid = games[room]['player_order'][games[room]['turn']]
+            first_player_name = games[room]['players'][first_player_sid]['username']
+            start_log = f"The game has started! The first turn goes to {first_player_name}."
+            games[room]['conversation'].append(start_log)
+            emit('game_update', {
+                'players': [p['username'] for p in games[room]['players'].values()],
+                'log': start_log,
+                'current_turn': first_player_name
+            }, room=room)
+            if games[room]['players'][first_player_sid]['is_ai']:
+                socketio.sleep(0.5)
+                ai_ask_question(room, first_player_sid)
+    except Exception as e:
+        logger.error(f"Error in start_game: {e}")
+        emit('game_update', {'log': 'An error occurred while starting the game.'})
 
 
 def ai_ask_question(room, ai_sid):
     """Makes the AI ask a question."""
-    ai_name = games[room]['players'][ai_sid]['username']
-    
-    # Get available targets (exclude the AI itself)
-    available_targets = [p['username'] for sid, p in games[room]['players'].items() 
-                        if sid != ai_sid]
-    
-    if not available_targets:
-        return
-    
-    # Choose random target
-    target_name = random.choice(available_targets)
-    
-    # Generate question
-    history = "\n".join(games[room]['conversation'])
-    question = get_ai_question(history, available_targets)
-    
-    # Emit the question
-    log_entry = f"{ai_name} asks {target_name}: {question}"
-    games[room]['conversation'].append(log_entry)
-    
-    # Find target SID
-    target_sid = None
-    for sid, player in games[room]['players'].items():
-        if player['username'] == target_name:
-            target_sid = sid
-            break
-    
-    if target_sid:
+    try:
+        ai_name = games[room]['players'][ai_sid]['username']
+        
+        # Get available targets (exclude the AI itself)
+        available_targets = [p['username'] for sid, p in games[room]['players'].items() 
+                            if sid != ai_sid]
+        
+        if not available_targets:
+            return
+        
+        # Choose random target
+        target_name = random.choice(available_targets)
+        
+        # Generate question
+        history = "\n".join(games[room]['conversation'])
+        question = get_ai_question(history, available_targets)
+        
+        # Emit the question
+        log_entry = f"{ai_name} asks {target_name}: {question}"
+        games[room]['conversation'].append(log_entry)
+        
+        # Find target SID
+        target_sid = None
+        for sid, player in games[room]['players'].items():
+            if player['username'] == target_name:
+                target_sid = sid
+                break
+        
+        if target_sid:
+            # The turn now passes to the person being questioned
+            games[room]['turn'] = games[room]['player_order'].index(target_sid)
+            
+            emit('game_update', {
+                'log': log_entry,
+                'current_turn': target_name,
+                'mode': 'answering'
+            }, room=room)
+            
+            # If the target is also AI, make it answer automatically
+            if games[room]['players'][target_sid]['is_ai']:
+                history = "\n".join(games[room]['conversation'])
+                ai_answer = get_ai_answer(question, history)
+                # We add a small delay to make it feel less instant
+                socketio.sleep(random.uniform(0.5, 1.5))
+                on_submit_answer({'answer': ai_answer}, ai_sid=target_sid)
+    except Exception as e:
+        logger.error(f"Error in ai_ask_question: {e}")
+        emit('game_update', {'log': 'An error occurred while the AI was asking a question.'})
+
+
+@socketio.on('ask_question')
+def on_ask_question(data):
+    try:
+        room = "main"
+        if 'player_order' not in games[room]:
+            emit('game_update', {'log': "You can't ask questions until the game has started."}, room=request.sid)
+            return
+        question = data['question']
+        target_player_name = data['target']
+        
+        asker_sid = request.sid
+        asker_name = games[room]['players'][asker_sid]['username']
+        
+        # Find target SID
+        target_sid = None
+        for sid, player in games[room]['players'].items():
+            if player['username'] == target_player_name:
+                target_sid = sid
+                break
+            
+        if not target_sid: return # Invalid target
+
+        log_entry = f"{asker_name} asks {target_player_name}: {question}"
+        games[room]['conversation'].append(log_entry)
+        
         # The turn now passes to the person being questioned
         games[room]['turn'] = games[room]['player_order'].index(target_sid)
         
         emit('game_update', {
             'log': log_entry,
-            'current_turn': target_name,
-            'mode': 'answering'
+            'current_turn': target_player_name,
+            'mode': 'answering' # Tell the UI to show the answer box for this player
         }, room=room)
         
-        # If the target is also AI, make it answer automatically
+        # If the target is the AI, get an answer automatically
         if games[room]['players'][target_sid]['is_ai']:
             history = "\n".join(games[room]['conversation'])
             ai_answer = get_ai_answer(question, history)
             # We add a small delay to make it feel less instant
             socketio.sleep(random.uniform(0.5, 1.5))
             on_submit_answer({'answer': ai_answer}, ai_sid=target_sid)
-
-
-@socketio.on('ask_question')
-def on_ask_question(data):
-    room = "main"
-    question = data['question']
-    target_player_name = data['target']
-    
-    asker_sid = request.sid
-    asker_name = games[room]['players'][asker_sid]['username']
-    
-    # Find target SID
-    target_sid = None
-    for sid, player in games[room]['players'].items():
-        if player['username'] == target_player_name:
-            target_sid = sid
-            break
-            
-    if not target_sid: return # Invalid target
-
-    log_entry = f"{asker_name} asks {target_player_name}: {question}"
-    games[room]['conversation'].append(log_entry)
-    
-    # The turn now passes to the person being questioned
-    games[room]['turn'] = games[room]['player_order'].index(target_sid)
-    
-    emit('game_update', {
-        'log': log_entry,
-        'current_turn': target_player_name,
-        'mode': 'answering' # Tell the UI to show the answer box for this player
-    }, room=room)
-    
-    # If the target is the AI, get an answer automatically
-    if games[room]['players'][target_sid]['is_ai']:
-        history = "\n".join(games[room]['conversation'])
-        ai_answer = get_ai_answer(question, history)
-        # We add a small delay to make it feel less instant
-        socketio.sleep(random.uniform(0.5, 1.5))
-        on_submit_answer({'answer': ai_answer}, ai_sid=target_sid)
+    except Exception as e:
+        logger.error(f"Error in on_ask_question: {e}")
+        emit('game_update', {'log': 'An error occurred while asking a question.'}, room=request.sid)
 
 
 @socketio.on('submit_answer')
 def on_submit_answer(data, ai_sid=None):
-    room = "main"
-    answer = data['answer']
-    
-    # Use ai_sid if provided, otherwise get from request
-    answerer_sid = ai_sid or request.sid
-    answerer_name = games[room]['players'][answerer_sid]['username']
-    
-    log_entry = f"{answerer_name} answers: {answer}"
-    games[room]['conversation'].append(log_entry)
-    
-    # The turn now passes to the person who just answered to ask the next question
-    games[room]['turn'] = games[room]['player_order'].index(answerer_sid)
-    
-    emit('game_update', {
-        'log': log_entry,
-        'current_turn': answerer_name,
-        'mode': 'asking' # Tell UI it's back to asking mode
-    }, room=room)
-    
-    # If the answerer is AI, make it ask the next question
-    if games[room]['players'][answerer_sid]['is_ai']:
-        # Check if this AI is the outsider and should guess
-        if answerer_sid == games[room]['outsider_sid']:
-            # AI outsider gets a chance to guess after answering
-            socketio.sleep(random.uniform(0.5, 1.5))  # Small delay before guessing
-            if check_ai_guess(room, answerer_sid):
-                return  # Game is over, don't continue
+    try:
+        room = "main"
+        answer = data['answer']
         
-        # Continue with normal turn (ask next question)
-        socketio.sleep(random.uniform(0.5, 1.5))  # Small delay
-        ai_ask_question(room, answerer_sid)
+        # Use ai_sid if provided, otherwise get from request
+        answerer_sid = ai_sid or request.sid
+        answerer_name = games[room]['players'][answerer_sid]['username']
+        
+        log_entry = f"{answerer_name} answers: {answer}"
+        games[room]['conversation'].append(log_entry)
+        
+        # The turn now passes to the person who just answered to ask the next question
+        games[room]['turn'] = games[room]['player_order'].index(answerer_sid)
+        
+        emit('game_update', {
+            'log': log_entry,
+            'current_turn': answerer_name,
+            'mode': 'asking' # Tell UI it's back to asking mode
+        }, room=room)
+        
+        # If the answerer is AI, make it ask the next question
+        if games[room]['players'][answerer_sid]['is_ai']:
+            # Check if this AI is the outsider and should guess
+            if answerer_sid == games[room]['outsider_sid']:
+                # AI outsider gets a chance to guess after answering
+                socketio.sleep(random.uniform(0.5, 1.5))  # Small delay before guessing
+                if check_ai_guess(room, answerer_sid):
+                    return  # Game is over, don't continue
+            
+            # Continue with normal turn (ask next question)
+            socketio.sleep(random.uniform(0.5, 1.5))  # Small delay
+            ai_ask_question(room, answerer_sid)
+    except Exception as e:
+        logger.error(f"Error in on_submit_answer: {e}")
+        emit('game_update', {'log': 'An error occurred while submitting an answer.'}, room=request.sid)
 
 
 if __name__ == '__main__':
@@ -387,6 +426,6 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=None, help='Port to run the server on')
     args = parser.parse_args()
     
-    # Priority: command line arg > environment variable > default
     port = args.port or int(os.getenv('PORT', 5000))
-    socketio.run(app, debug=False, port=port)
+    logger.info(f"Starting server on port {port} (debug={os.environ.get('RENDER', '') != 'true'})")
+    socketio.run(app, debug=os.environ.get('RENDER', '') != 'true', port=port)

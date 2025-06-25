@@ -5,7 +5,8 @@ console.log('Game.js loaded successfully');
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded, initializing Socket.IO connection...');
     
-    const socket = io();
+    // Force WebSocket transport for better performance on Render
+    const socket = io({ transports: ['websocket'] });
     console.log('Socket.IO connection created');
     
     let myUsername = null;
