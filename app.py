@@ -24,6 +24,11 @@ LOCATIONS = ["Japan", "Brazil", "Egypt", "Italy", "Australia", "Canada", "Thaila
 AI_NAMES = ["Alex", "Sam", "Jordan", "Casey", "Taylor", "Morgan", "Riley", "Quinn", "Avery", "Blake"]
 
 # --- Helper Functions ---
+def get_recent_history(conversation_history, n=5):
+    """Return only the last n exchanges from the conversation history as a string."""
+    lines = conversation_history.split('\n') if isinstance(conversation_history, str) else conversation_history
+    return '\n'.join(lines[-n:])
+
 def get_ai_answer(question, conversation_history):
     """Generates a vague, defensive answer for the AI."""
     system_prompt = (
@@ -34,9 +39,10 @@ def get_ai_answer(question, conversation_history):
         "Your answer must not commit to any specific facts about a place."
     )
     
+    recent_history = get_recent_history(conversation_history, 5)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"The conversation so far:\n{conversation_history}\n\nNow, answer this question: '{question}'"}
+        {"role": "user", "content": f"The conversation so far:\n{recent_history}\n\nNow, answer this question: '{question}'"}
     ]
     
     try:
@@ -44,7 +50,7 @@ def get_ai_answer(question, conversation_history):
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.7,
-            max_tokens=40
+            max_tokens=25
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -60,9 +66,10 @@ def get_ai_question(conversation_history, available_targets):
         "Here is an example; What kind of food is popular in this location?"
     )
     
+    recent_history = get_recent_history(conversation_history, 5)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Conversation so far:\n{conversation_history}\n\nAvailable players to ask: {', '.join(available_targets)}\n\nAsk a question to one of these players:"}
+        {"role": "user", "content": f"Conversation so far:\n{recent_history}\n\nAvailable players to ask: {', '.join(available_targets)}\n\nAsk a question to one of these players:"}
     ]
     
     try:
@@ -70,7 +77,7 @@ def get_ai_question(conversation_history, available_targets):
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.8,
-            max_tokens=60
+            max_tokens=25
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -100,9 +107,10 @@ def get_ai_location_guess(conversation_history):
         "Respond with just the country name, nothing else."
     )
     
+    recent_history = get_recent_history(conversation_history, 5)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Conversation so far:\n{conversation_history}\n\nBased on this conversation, which country do you think it is? Respond with just the country name:"}
+        {"role": "user", "content": f"Conversation so far:\n{recent_history}\n\nBased on this conversation, which country do you think it is? Respond with just the country name:"}
     ]
     
     try:
@@ -110,7 +118,7 @@ def get_ai_location_guess(conversation_history):
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.3,
-            max_tokens=20
+            max_tokens=10
         )
         guess = response.choices[0].message.content.strip()
         # Clean up the response to just get the country name
@@ -248,7 +256,7 @@ def on_start_game():
         
         # If AI goes first, make it ask a question
         if games[room]['players'][first_player_sid]['is_ai']:
-            socketio.sleep(2)  # Small delay to make it feel natural
+            socketio.sleep(0.5)  # Small delay to make it feel natural
             ai_ask_question(room, first_player_sid)
 
 
@@ -296,7 +304,7 @@ def ai_ask_question(room, ai_sid):
             history = "\n".join(games[room]['conversation'])
             ai_answer = get_ai_answer(question, history)
             # We add a small delay to make it feel less instant
-            socketio.sleep(random.uniform(2, 5))
+            socketio.sleep(random.uniform(0.5, 1.5))
             on_submit_answer({'answer': ai_answer}, ai_sid=target_sid)
 
 
@@ -335,7 +343,7 @@ def on_ask_question(data):
         history = "\n".join(games[room]['conversation'])
         ai_answer = get_ai_answer(question, history)
         # We add a small delay to make it feel less instant
-        socketio.sleep(random.uniform(2, 5))
+        socketio.sleep(random.uniform(0.5, 1.5))
         on_submit_answer({'answer': ai_answer}, ai_sid=target_sid)
 
 
@@ -365,12 +373,12 @@ def on_submit_answer(data, ai_sid=None):
         # Check if this AI is the outsider and should guess
         if answerer_sid == games[room]['outsider_sid']:
             # AI outsider gets a chance to guess after answering
-            socketio.sleep(random.uniform(1, 3))  # Small delay before guessing
+            socketio.sleep(random.uniform(0.5, 1.5))  # Small delay before guessing
             if check_ai_guess(room, answerer_sid):
                 return  # Game is over, don't continue
         
         # Continue with normal turn (ask next question)
-        socketio.sleep(random.uniform(2, 4))  # Small delay
+        socketio.sleep(random.uniform(0.5, 1.5))  # Small delay
         ai_ask_question(room, answerer_sid)
 
 
@@ -381,4 +389,4 @@ if __name__ == '__main__':
     
     # Priority: command line arg > environment variable > default
     port = args.port or int(os.getenv('PORT', 5000))
-    socketio.run(app, debug=True, port=port)
+    socketio.run(app, debug=False, port=port)
