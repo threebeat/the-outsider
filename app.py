@@ -11,8 +11,8 @@ import openai
 # --- Initialization ---
 load_dotenv()
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'a_very_secret_key_that_should_be_changed'
-socketio = SocketIO(app)
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'a_very_secret_key_that_should_be_changed')
+socketio = SocketIO(app, cors_allowed_origins="*")
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # --- Game State Management ---
