@@ -5,7 +5,7 @@ import logging
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
-from config.settings import SECRET_KEY, CORS_ORIGINS, DEBUG
+from config.settings import SECRET_KEY, CORS_ORIGINS, DEBUG, OPENAI_API_KEY
 from game.logic import GameManager
 from socket_handlers.handlers import register_handlers
 from models.database import Base, engine, SessionLocal, get_win_counter, WinCounter
@@ -72,6 +72,12 @@ if win_counter_data:
         session.close()
 
 logger.info("Database reset complete!")
+
+# Verify OpenAI API key is configured
+if not OPENAI_API_KEY:
+    logger.warning("WARNING: OPENAI_API_KEY is not set! AI responses will use fallback messages.")
+else:
+    logger.info("OpenAI API key is configured.")
 
 game_manager = GameManager(socketio)
 

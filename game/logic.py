@@ -166,7 +166,7 @@ class GameManager:
             # If asker is AI, have AI ask question
             if asker.is_ai:
                 logger.info(f"AI {asker.username} is the asker, calling ai_ask_question_with_delay")
-                ai_ask_question_with_delay(self.socketio, lobby, asker_sid, target_sid, lobby.location, delay=4)
+                ai_ask_question_with_delay(self.socketio, lobby, asker_sid, target_sid, lobby.location, self, delay=4)
             else:
                 logger.info(f"Human {asker.username} is the asker, waiting for manual question")
             
@@ -662,6 +662,7 @@ class GameManager:
             # Only update activity and reset timer if game is actively playing
             if lobby.state in ['playing', 'voting']:
                 self.last_activity = time.time()
+                logger.info(f"Activity updated at {self.last_activity}")
                 if self.inactivity_timer:
                     self.inactivity_timer.cancel()
                 self.reset_inactivity_timer()
@@ -711,4 +712,15 @@ class GameManager:
         current_time = time.time()
         if current_time - self.last_activity >= 60:
             logger.info(f"Inactivity timeout for room {room}")
-            self.reset_game(room) 
+            self.reset_game(room)
+
+    def pause_inactivity_timer(self):
+        """Pause the inactivity timer during AI operations."""
+        if self.inactivity_timer:
+            self.inactivity_timer.cancel()
+            logger.info("Inactivity timer paused during AI operation")
+
+    def resume_inactivity_timer(self):
+        """Resume the inactivity timer after AI operations."""
+        self.update_activity()
+        logger.info("Inactivity timer resumed after AI operation") 

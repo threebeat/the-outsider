@@ -19,7 +19,8 @@ def get_openai_client():
         try:
             if not OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY environment variable is not set")
-            _client = OpenAI(api_key=OPENAI_API_KEY)
+            # Set a longer timeout (20 seconds) to handle slow cold starts on Render
+            _client = OpenAI(api_key=OPENAI_API_KEY, timeout=20.0)
         except Exception as e:
             logger.error(f"Error initializing OpenAI client: {e}")
             # Return a mock client for development/testing
@@ -64,12 +65,14 @@ def generate_ai_response(question, location, is_outsider):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Question: {question}"}
             ],
-            max_tokens=50,
-            temperature=0.7
+            max_tokens=30,
+            temperature=0.7,
+            timeout=10  # Add timeout to prevent hanging
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error generating AI response: {e}")
+        # Return a quick fallback response instead of hanging
         return "It's pretty nice here."
 
 def generate_ai_question(target_name):
@@ -87,12 +90,14 @@ def generate_ai_question(target_name):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "Generate a question to ask this player:"}
             ],
-            max_tokens=50,
-            temperature=0.8
+            max_tokens=30,
+            temperature=0.8,
+            timeout=10  # Add timeout to prevent hanging
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error generating AI question: {e}")
+        # Return a quick fallback question
         return f"What's your favorite thing about this place?"
 
 def ai_vote_random(players, ai_sid):
@@ -110,13 +115,17 @@ def ai_vote_random(players, ai_sid):
             return choice.sid
     return None
 
-def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location, delay=6):
+def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location, game_manager=None, delay=3):
     """AI asks a question after a delay."""
     def delayed_question():
         socketio.sleep(delay)
         from models.database import SessionLocal, get_player_by_sid, get_players
         session = SessionLocal()
         try:
+            # Pause inactivity timer during AI operation
+            if game_manager:
+                game_manager.pause_inactivity_timer()
+            
             ai_player = get_player_by_sid(session, lobby, asker_sid)
             if not ai_player or not ai_player.is_ai:
                 logger.error(f"Error: AI player not found for asker_sid {asker_sid}")
@@ -142,19 +151,31 @@ def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location,
             logger.info(f"question_asked event emitted to all human SIDs")
             logger.info(f"Event data sent: asker={question_data['asker']}, target={question_data['target']}, question={question_data['question']}")
             logger.info(f"AI {ai_player.username} asked: {question}")
+            
+            # Resume inactivity timer after AI operation
+            if game_manager:
+                game_manager.resume_inactivity_timer()
+                
         except Exception as e:
             logger.error(f"Error in AI question: {e}")
+            # Resume inactivity timer even on error
+            if game_manager:
+                game_manager.resume_inactivity_timer()
         finally:
             session.close()
     socketio.start_background_task(delayed_question)
 
-def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_manager=None, delay=3):
+def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_manager=None, delay=2):
     """AI answers a question after a delay."""
     def delayed_answer():
         socketio.sleep(delay)
         from models.database import SessionLocal, get_player_by_sid, get_players, get_messages
         session = SessionLocal()
         try:
+            # Pause inactivity timer during AI operation
+            if game_manager:
+                game_manager.pause_inactivity_timer()
+            
             ai_player = get_player_by_sid(session, lobby, target_sid)
             if not ai_player or not ai_player.is_ai:
                 logger.error(f"Error: AI player not found for target_sid {target_sid}")
@@ -267,8 +288,15 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
                     # Handle turn progression manually to avoid immediate voting
                     _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, lobby.room)
             
+            # Resume inactivity timer after AI operation
+            if game_manager:
+                game_manager.resume_inactivity_timer()
+            
         except Exception as e:
             logger.error(f"Error in AI answer: {e}")
+            # Resume inactivity timer even on error
+            if game_manager:
+                game_manager.resume_inactivity_timer()
         finally:
             session.close()
     socketio.start_background_task(delayed_answer)
@@ -308,7 +336,7 @@ def _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, 
     finally:
         session.close()
 
-def ai_vote_with_delay(socketio, lobby, players, ai_sid, game_manager=None, delay=2):
+def ai_vote_with_delay(socketio, lobby, players, ai_sid, game_manager=None, delay=1):
     """AI votes after a delay."""
     def delayed_vote():
         socketio.sleep(delay)
@@ -337,7 +365,6 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
         
         logger.info(f"DEBUG: Location guess - Question count: {question_count}")
         logger.info(f"DEBUG: Location guess - Context length: {len(context)}")
-        logger.info(f"DEBUG: Location guess - Context: {context}")
         
         if question_count >= 3:
             # After question 3, force a guess with a very aggressive prompt
@@ -370,7 +397,8 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
                     {"role": "user", "content": "Which Spyfall location do you think this is? Return only the location name."}
                 ],
                 max_tokens=20,
-                temperature=0.2
+                temperature=0.2,
+                timeout=15  # Add timeout
             )
             
             guess = response.choices[0].message.content.strip()
@@ -397,31 +425,17 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
                             return loc
             
             return "Unknown"
-            
         else:
-            # Before question 3, be very aggressive about guessing
-            confidence_prompt = "You should be willing to guess if you see ANY location-related clues."
-            if question_count >= 2:
-                confidence_prompt = "You should be very willing to guess now. If you see ANY clues about location, make your best guess."
+            # For early questions, only guess if we have strong clues
+            if len(context) < 50:  # Not enough context yet
+                logger.info(f"DEBUG: Not enough context for location guess (length: {len(context)})")
+                return None
             
             system_prompt = f"""You are playing Spyfall, a social deduction game where players know a specific location except for one outsider (you).
             
-            You are the AI outsider who doesn't know the location. Based on the questions asked and answers given, 
-            you need to determine if you can guess which Spyfall location the other players know.
+            You are the AI outsider who doesn't know the location. Based on the conversation so far, can you guess which Spyfall location the other players know?
             
             Available Spyfall locations: {', '.join(LOCATIONS)}
-            
-            Current question count: {question_count}
-            {confidence_prompt}
-            
-            Rules:
-            1. If you see ANY location-related clues, return just the location name from the available options
-            2. Only return "NO_GUESS" if you have absolutely NO clues at all
-            3. Look for clues about: activities, people, objects, atmosphere, sounds, smells, or unique features
-            4. Be very aggressive about guessing - you're trying to win by figuring out the location
-            5. Even vague clues should prompt a guess
-            6. Choose from: {', '.join(LOCATIONS)}
-            7. IMPORTANT: Return ONLY the location name, nothing else
             
             Previous conversation:
             {context}
@@ -440,7 +454,8 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
                     {"role": "user", "content": "Which Spyfall location do you think this is? Return only the location name."}
                 ],
                 max_tokens=30,
-                temperature=0.3
+                temperature=0.3,
+                timeout=15  # Add timeout
             )
             
             guess = response.choices[0].message.content.strip()
