@@ -1,6 +1,10 @@
 from flask import request
 from flask_socketio import join_room, emit
-from models.database import SessionLocal, get_lobby, get_players, get_player_by_sid, get_player_by_username, add_message, get_win_counter, get_db_session, close_db_session
+from models.database import (
+    SessionLocal, get_lobby, get_players, get_player_by_sid, 
+    get_player_by_username, add_message, get_win_counter, 
+    get_db_session, close_db_session, get_db
+)
 from game.logic import GameManager
 from game.ai import get_random_ai_name
 from config.settings import DEBUG
@@ -62,10 +66,9 @@ def register_handlers(socketio, game_manager):
             }, room=current_sid)
             return
         
-        # Use improved session management
-        session = None
+        # Use basic session management
+        session = SessionLocal()
         try:
-            session = get_db_session()
             lobby = get_lobby(session, room)
             
             # Check if a game is already in progress
@@ -183,8 +186,7 @@ def register_handlers(socketio, game_manager):
             logger.error(f"Error in on_join: {e}")
             emit('game_update', {'log': 'An error occurred while joining the game.'}, room=request.sid)
         finally:
-            if session:
-                close_db_session(session)
+            session.close()
 
     @socketio.on('start_game')
     def handle_start_game(data):

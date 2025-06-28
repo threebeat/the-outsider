@@ -1,39 +1,25 @@
 import os
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship, scoped_session
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from config.settings import DATABASE_URL
+from contextlib import contextmanager
 
 # Database Setup
 Base = declarative_base()
 
-# Create engine with appropriate settings for SQLite
+# Create engine with appropriate settings
 if DATABASE_URL.startswith('sqlite'):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    # For PostgreSQL, use connection pooling
-    engine = create_engine(
-        DATABASE_URL,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=True,
-        pool_recycle=300
-    )
+    # For PostgreSQL, use simpler configuration
+    engine = create_engine(DATABASE_URL)
 
-# Create session factory with thread-local scope
-SessionLocal = scoped_session(sessionmaker(
-    bind=engine,
-    autocommit=False,
-    autoflush=False
-))
+# Create session factory (not scoped for now)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 def get_db_session():
-    """Get a database session with proper cleanup."""
-    session = SessionLocal()
-    try:
-        return session
-    except Exception as e:
-        session.close()
-        raise e
+    """Get a database session."""
+    return SessionLocal()
 
 def close_db_session(session):
     """Safely close a database session."""
@@ -41,8 +27,21 @@ def close_db_session(session):
         session.close()
     except Exception as e:
         print(f"Error closing session: {e}")
-        # Force remove the session from the registry
-        SessionLocal.remove()
+
+from contextlib import contextmanager
+
+@contextmanager
+def get_db():
+    """Context manager for database sessions."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
 
 # Database Models
 class Lobby(Base):

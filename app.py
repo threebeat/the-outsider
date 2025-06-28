@@ -21,7 +21,7 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 socketio = SocketIO(
     app,
     cors_allowed_origins=CORS_ORIGINS,
-    async_mode="eventlet" if os.environ.get("RENDER", "") == "true" else None,
+    async_mode="gevent" if os.environ.get("RENDER", "") == "true" else None,
     ping_timeout=60,
     ping_interval=25
 )
