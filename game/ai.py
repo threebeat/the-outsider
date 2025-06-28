@@ -7,7 +7,40 @@ from config.settings import OPENAI_API_KEY
 from utils.constants import AI_NAMES, LOCATIONS
 from models.database import Player
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Initialize client lazily to avoid import-time issues
+_client = None
+
+def get_openai_client():
+    """Get OpenAI client, initializing it if needed."""
+    global _client
+    if _client is None:
+        try:
+            if not OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY environment variable is not set")
+            _client = OpenAI(api_key=OPENAI_API_KEY)
+        except Exception as e:
+            print(f"Error initializing OpenAI client: {e}")
+            # Return a mock client for development/testing
+            class MockClient:
+                def __init__(self):
+                    self.chat = MockChat()
+            class MockChat:
+                def __init__(self):
+                    self.completions = MockCompletions()
+            class MockCompletions:
+                def create(self, **kwargs):
+                    class MockResponse:
+                        def __init__(self):
+                            self.choices = [MockChoice()]
+                    class MockChoice:
+                        def __init__(self):
+                            self.message = MockMessage()
+                    class MockMessage:
+                        def __init__(self):
+                            self.content = "Mock response (OpenAI not configured)"
+                    return MockResponse()
+            _client = MockClient()
+    return _client
 
 def get_random_ai_name():
     """Get a random AI name."""
@@ -23,7 +56,7 @@ def generate_ai_response(question, location, is_outsider):
         Be vague but convincing - don't give away that you're guessing.
         Keep your answer short (1 sentence max) and natural."""
 
-        response = client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -46,7 +79,7 @@ def generate_ai_question(target_name):
         Focus on: activities, people, objects, atmosphere, sounds, smells, or unique features of Spyfall locations.
         Keep the question short and natural. Don't reveal that you don't know the location."""
 
-        response = client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -328,7 +361,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             IMPORTANT: Return ONLY the location name from the list, nothing else."""
 
             print(f"DEBUG: Sending forced guess prompt to GPT-4o")
-            response = client.chat.completions.create(
+            response = get_openai_client().chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -398,7 +431,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             Based on all this information, can you guess which Spyfall location the other players know? If you see ANY clues, what is your best guess from the available options? If absolutely no clues, say "NO_GUESS"."""
 
             print(f"DEBUG: Sending regular guess prompt to GPT-4o")
-            response = client.chat.completions.create(
+            response = get_openai_client().chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
