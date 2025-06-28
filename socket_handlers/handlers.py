@@ -66,10 +66,15 @@ def register_handlers(socketio, game_manager):
             }, room=current_sid)
             return
         
-        # Use basic session management
-        session = SessionLocal()
+        # Use basic session management with debugging
+        session = None
         try:
+            logger.info(f"Creating database session...")
+            session = get_db_session()
+            logger.info(f"Database session created successfully")
+            
             lobby = get_lobby(session, room)
+            logger.info(f"Got lobby: {lobby.room}, state: {lobby.state}")
             
             # Check if a game is already in progress
             if lobby.state in ['playing', 'voting']:
@@ -181,12 +186,17 @@ def register_handlers(socketio, game_manager):
                 'ai_wins': win_counter.ai_wins
             }, room=room)
             
-            logger.info(f"game_update event emitted")
+            logger.info(f"game_update event emitted successfully")
         except Exception as e:
             logger.error(f"Error in on_join: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             emit('game_update', {'log': 'An error occurred while joining the game.'}, room=request.sid)
         finally:
-            session.close()
+            if session:
+                logger.info(f"Closing database session...")
+                close_db_session(session)
+                logger.info(f"Database session closed")
 
     @socketio.on('start_game')
     def handle_start_game(data):

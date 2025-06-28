@@ -2,7 +2,6 @@ import os
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from config.settings import DATABASE_URL
-from contextlib import contextmanager
 
 # Database Setup
 Base = declarative_base()
@@ -14,7 +13,7 @@ else:
     # For PostgreSQL, use simpler configuration
     engine = create_engine(DATABASE_URL)
 
-# Create session factory (not scoped for now)
+# Create simple session factory
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 def get_db_session():
