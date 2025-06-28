@@ -8,7 +8,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from config.settings import SECRET_KEY, CORS_ORIGINS, DEBUG, OPENAI_API_KEY
 from game.logic import GameManager
 from socket_handlers.handlers import register_handlers
-from models.database import Base, engine, SessionLocal, get_win_counter, WinCounter
+from models.database import Base, engine, SessionLocal, get_win_counter, WinCounter, get_player_by_sid, remove_player, get_players, get_lobby
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -88,14 +88,49 @@ def test_event(data):
     emit('test_response', {'message': 'Test successful!'})
 
 @socketio.on('connect')
-def handle_connect():
-    logger.info("Client connected!")
+def handle_connect(sid):
+    logger.info(f"Client connected: {sid}")
     # Send a simple test message to verify connection
     emit('connection_test', {'message': 'Connection established successfully!'})
 
 @socketio.on('disconnect')
-def handle_disconnect():
-    logger.info("Client disconnected!")
+def handle_disconnect(sid):
+    logger.info(f"Client disconnected: {sid}")
+    
+    # Clean up the player from the game state
+    try:
+        # Find the player with this SID
+        session = SessionLocal()
+        try:
+            lobby = get_lobby(session, "main")
+            player = get_player_by_sid(session, lobby, sid)
+            if player:
+                logger.info(f"Removing player {player.username} (SID: {sid}) from game")
+                
+                # Remove the player from the database
+                remove_player(session, player)
+                
+                # Get updated player list
+                players = get_players(session, lobby)
+                player_names = [p.username for p in players]
+                
+                # Emit game update to remaining players
+                socketio.emit('game_update', {
+                    'players': player_names,
+                    'log': f"{player.username} has left the game."
+                }, room="main")
+                
+                logger.info(f"Player {player.username} removed successfully. Remaining players: {player_names}")
+            else:
+                logger.info(f"No player found for SID: {sid}")
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up disconnected player {sid}: {e}")
+        finally:
+            session.close()
+            
+    except Exception as e:
+        logger.error(f"Error in disconnect handler: {e}")
 
 @socketio.on_error_default
 def default_error_handler(e):

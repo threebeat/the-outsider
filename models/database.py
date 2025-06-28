@@ -141,6 +141,11 @@ def get_player_by_username(session, lobby, username):
     """Return the Player object for a given username in a lobby, or None if not found."""
     return session.query(Player).filter_by(lobby_id=lobby.id, username=username).first()
 
+def remove_player(session, player):
+    """Remove a player from the database."""
+    session.delete(player)
+    session.commit()
+
 def get_messages(session, lobby):
     """Get all messages in a lobby."""
     return session.query(Message).filter_by(lobby_id=lobby.id).order_by(Message.id).all()
