@@ -15,6 +15,72 @@
         #loading { text-align: center; padding: 20px; }
         #error { color: red; padding: 10px; }
         #lobby-info { font-size: 12px; color: #666; margin-bottom: 10px; }
+        #win-counter {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: #fff;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        .win-counter-title {
+            text-align: center;
+            margin-bottom: 5px;
+            color: #333;
+            font-size: 12px;
+        }
+        .win-counter-stats {
+            display: flex;
+            justify-content: space-between;
+            gap: 15px;
+        }
+        .win-stat {
+            text-align: center;
+        }
+        .win-stat-label {
+            font-size: 10px;
+            color: #666;
+            margin-bottom: 2px;
+        }
+        .win-stat-value {
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .human-wins { color: #4caf50; }
+        .ai-wins { color: #d32f2f; }
+        #question-counter { 
+            background: #e8f4fd; 
+            padding: 8px; 
+            margin: 5px 0; 
+            border-radius: 4px; 
+            text-align: center;
+            font-weight: bold;
+        }
+        #vote-form {
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 5px 0;
+        }
+        .vote-option {
+            margin: 5px 0;
+            padding: 5px;
+            cursor: pointer;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        .vote-option:hover {
+            background: #f0f0f0;
+        }
+        .vote-option.selected {
+            background: #007bff;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -22,18 +88,25 @@
     
     <div id="game-container" class="hidden">
         <div id="sidebar">
-            <h3>My Role</h3>
             <p id="my-role">Waiting...</p>
             <p id="my-location">Location: ???</p>
+            <hr>
+            <div id="question-counter" class="hidden">
+                Questions: <span id="question-count">0</span><br>
+                <span id="questions-until-vote">3 until vote</span>
+            </div>
             <hr>
             <div id="lobby-info">
                 <p>Join the game and wait for other players.</p>
                 <p>Minimum players: 2</p>
+                <p><strong>Goal:</strong> Vote out the AI Outsider!</p>
             </div>
             <h3>Players</h3>
             <ul id="player-list"></ul>
             <hr>
             <button id="start-game-btn">Start Game</button>
+            <hr>
+            <button id="manual-reset-btn" style="background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; margin-top: 10px;">Manual Reset</button>
         </div>
 
         <div id="main-content">
@@ -56,12 +129,31 @@
                         <input type="text" id="answer-input" placeholder="Your answer...">
                         <button id="answer-btn">Answer</button>
                     </div>
+                    <div id="vote-form" class="hidden">
+                        <h4>🗳️ Vote for who you think is the Outsider:</h4>
+                        <div id="vote-options"></div>
+                        <button id="submit-vote-btn" disabled>Submit Vote</button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
     <div id="error" class="hidden"></div>
+
+    <div id="win-counter">
+        <div class="win-counter-title">Win Counter</div>
+        <div class="win-counter-stats">
+            <div class="win-stat">
+                <span class="win-stat-label">Human Wins:</span>
+                <span class="win-stat-value human-wins">0</span>
+            </div>
+            <div class="win-stat">
+                <span class="win-stat-label">AI Wins:</span>
+                <span class="win-stat-value ai-wins">0</span>
+            </div>
+        </div>
+    </div>
 
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script>
