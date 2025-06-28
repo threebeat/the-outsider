@@ -5,8 +5,12 @@ console.log('Game.js loaded successfully');
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded, initializing Socket.IO connection...');
     
-    // Force WebSocket transport for better performance on Render
-    const socket = io({ transports: ['websocket'] });
+    // Socket.IO connection with better error handling
+    const socket = io({ 
+        transports: ['websocket', 'polling'],
+        timeout: 60000,
+        forceNew: true
+    });
     console.log('Socket.IO connection created');
     
     let myUsername = null;
@@ -248,7 +252,8 @@ document.addEventListener('DOMContentLoaded', () => {
     addMessageToLog('The AI is always the Outsider - humans must work together to identify and vote out the AI!', 'system');
     
     socket.on('connect', () => {
-        console.log('Connected to server');
+        console.log('Connected to server!');
+        addMessageToLog('Connected to game server!', 'system');
         // Join the main room
         socket.emit('join_room', { room: 'main' });
         console.log('Sent join_room event for main room');
@@ -269,11 +274,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     socket.on('disconnect', () => {
-        console.log('Disconnected from server');
+        console.log('Disconnected from server!');
+        addMessageToLog('Disconnected from game server. Trying to reconnect...', 'error');
     });
 
     socket.on('connect_error', (error) => {
         console.error('Connection error:', error);
+        addMessageToLog('Connection error: ' + error.message, 'error');
     });
 
     socket.on('win_counter_update', (data) => {
@@ -1257,6 +1264,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 turnIndicator.textContent = `🤝 It's a tie! No one eliminated.`;
             }
         }
+    });
+
+    socket.on('connection_test', (data) => {
+        console.log('Connection test received:', data);
+        addMessageToLog('Connection test successful!', 'system');
+    });
+
+    socket.on('error', (data) => {
+        console.error('Server error:', data);
+        addMessageToLog('Server error: ' + data.message, 'error');
     });
 
     console.log('Event listeners and Socket.IO handlers set up successfully');

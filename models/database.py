@@ -1,7 +1,10 @@
 import os
+import logging
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from config.settings import DATABASE_URL
+
+logger = logging.getLogger(__name__)
 
 # Database Setup
 Base = declarative_base()
@@ -17,15 +20,20 @@ else:
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 def get_db_session():
-    """Get a database session."""
-    return SessionLocal()
+    """Get a database session with error handling."""
+    try:
+        return SessionLocal()
+    except Exception as e:
+        logger.error(f"Error creating database session: {e}")
+        raise
 
 def close_db_session(session):
-    """Safely close a database session."""
+    """Safely close a database session with error handling."""
     try:
-        session.close()
+        if session:
+            session.close()
     except Exception as e:
-        print(f"Error closing session: {e}")
+        logger.error(f"Error closing session: {e}")
 
 from contextlib import contextmanager
 

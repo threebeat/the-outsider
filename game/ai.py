@@ -1,11 +1,13 @@
 import random
-import asyncio
 import threading
 import time
+import logging
 from openai import OpenAI
 from config.settings import OPENAI_API_KEY
 from utils.constants import AI_NAMES, LOCATIONS
 from models.database import Player
+
+logger = logging.getLogger(__name__)
 
 # Initialize client lazily to avoid import-time issues
 _client = None
@@ -19,7 +21,7 @@ def get_openai_client():
                 raise ValueError("OPENAI_API_KEY environment variable is not set")
             _client = OpenAI(api_key=OPENAI_API_KEY)
         except Exception as e:
-            print(f"Error initializing OpenAI client: {e}")
+            logger.error(f"Error initializing OpenAI client: {e}")
             # Return a mock client for development/testing
             class MockClient:
                 def __init__(self):
@@ -67,7 +69,7 @@ def generate_ai_response(question, location, is_outsider):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error generating AI response: {e}")
+        logger.error(f"Error generating AI response: {e}")
         return "It's pretty nice here."
 
 def generate_ai_question(target_name):
@@ -90,7 +92,7 @@ def generate_ai_question(target_name):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Error generating AI question: {e}")
+        logger.error(f"Error generating AI question: {e}")
         return f"What's your favorite thing about this place?"
 
 def ai_vote_random(players, ai_sid):
@@ -117,7 +119,7 @@ def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location,
         try:
             ai_player = get_player_by_sid(session, lobby, asker_sid)
             if not ai_player or not ai_player.is_ai:
-                print(f"Error: AI player not found for asker_sid {asker_sid}")
+                logger.error(f"Error: AI player not found for asker_sid {asker_sid}")
                 return
             target_player = get_player_by_sid(session, lobby, target_sid)
             target_name = target_player.username if target_player else "Unknown"
@@ -129,19 +131,19 @@ def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location,
                 'asker_sid': ai_player.sid,
                 'target_sid': target_sid
             }
-            print(f"AI {ai_player.username} asking question: {question}")
-            print(f"Emitting question_asked event: {question_data}")
+            logger.info(f"AI {ai_player.username} asking question: {question}")
+            logger.info(f"Emitting question_asked event: {question_data}")
             players = get_players(session, lobby)
             human_players = [p for p in players if not p.is_ai]
-            print(f"Found {len(human_players)} human players to send to")
+            logger.info(f"Found {len(human_players)} human players to send to")
             for player in human_players:
-                print(f"  Sending to {player.username} (SID: {player.sid})")
+                logger.info(f"  Sending to {player.username} (SID: {player.sid})")
                 socketio.emit('question_asked', question_data, room=player.sid)
-            print(f"question_asked event emitted to all human SIDs")
-            print(f"Event data sent: asker={question_data['asker']}, target={question_data['target']}, question={question_data['question']}")
-            print(f"AI {ai_player.username} asked: {question}")
+            logger.info(f"question_asked event emitted to all human SIDs")
+            logger.info(f"Event data sent: asker={question_data['asker']}, target={question_data['target']}, question={question_data['question']}")
+            logger.info(f"AI {ai_player.username} asked: {question}")
         except Exception as e:
-            print(f"Error in AI question: {e}")
+            logger.error(f"Error in AI question: {e}")
         finally:
             session.close()
     socketio.start_background_task(delayed_question)
@@ -155,9 +157,9 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
         try:
             ai_player = get_player_by_sid(session, lobby, target_sid)
             if not ai_player or not ai_player.is_ai:
-                print(f"Error: AI player not found for target_sid {target_sid}")
+                logger.error(f"Error: AI player not found for target_sid {target_sid}")
                 return
-            print(f"DEBUG: AI {ai_player.username} starting to answer question: {question}")
+            logger.info(f"DEBUG: AI {ai_player.username} starting to answer question: {question}")
             answer = generate_ai_response(question, location, True)  # AI is always outsider
             ai_answer_data = {
                 'answer': answer,
@@ -165,17 +167,17 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
                 'target': ai_player.username,
                 'target_sid': target_sid
             }
-            print(f"AI {ai_player.username} answering: {answer}")
+            logger.info(f"AI {ai_player.username} answering: {answer}")
             players = get_players(session, lobby)
             human_players = [p for p in players if not p.is_ai]
-            print(f"Found {len(human_players)} human players to send to")
+            logger.info(f"Found {len(human_players)} human players to send to")
             for player in human_players:
-                print(f"  Sending ai_answer to {player.username} (SID: {player.sid})")
+                logger.info(f"  Sending ai_answer to {player.username} (SID: {player.sid})")
                 socketio.emit('ai_answer', ai_answer_data, room=player.sid)
-            print(f"AI {ai_player.username} answered: {answer}")
+            logger.info(f"AI {ai_player.username} answered: {answer}")
             
             # AI is always the outsider, so always try to guess the location
-            print(f"DEBUG: AI {ai_player.username} is outsider, attempting location guess...")
+            logger.info(f"DEBUG: AI {ai_player.username} is outsider, attempting location guess...")
             
             # Get previous Q&A pairs from the game
             messages = get_messages(session, lobby)
@@ -212,24 +214,24 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
                 'answer': answer
             })
             
-            print(f"DEBUG: AI analyzing {len(qa_pairs)} Q&A pairs for location guess")
+            logger.info(f"DEBUG: AI analyzing {len(qa_pairs)} Q&A pairs for location guess")
             for i, qa in enumerate(qa_pairs):
-                print(f"DEBUG: Q&A {i+1}: Q='{qa['question']}' A='{qa['answer']}'")
+                logger.info(f"DEBUG: Q&A {i+1}: Q='{qa['question']}' A='{qa['answer']}'")
             
             # Generate location guess - include ALL Q&A pairs including current one
             location_guess = generate_location_guess(question, answer, qa_pairs, location, lobby.question_count + 1)
             
             if location_guess:
-                print(f"DEBUG: AI {ai_player.username} guessing location: {location_guess}")
-                print(f"DEBUG: Actual location: {location}")
-                print(f"DEBUG: Location guess type: {type(location_guess)}, length: {len(location_guess)}")
-                print(f"DEBUG: Actual location type: {type(location)}, length: {len(location)}")
-                print(f"DEBUG: Location guess lower: '{location_guess.lower()}'")
-                print(f"DEBUG: Actual location lower: '{location.lower()}'")
+                logger.info(f"DEBUG: AI {ai_player.username} guessing location: {location_guess}")
+                logger.info(f"DEBUG: Actual location: {location}")
+                logger.info(f"DEBUG: Location guess type: {type(location_guess)}, length: {len(location_guess)}")
+                logger.info(f"DEBUG: Actual location type: {type(location)}, length: {len(location)}")
+                logger.info(f"DEBUG: Location guess lower: '{location_guess.lower()}'")
+                logger.info(f"DEBUG: Actual location lower: '{location.lower()}'")
                 
                 # Check if guess is correct
                 is_correct = location_guess.lower() == location.lower()
-                print(f"DEBUG: Location comparison result: {is_correct}")
+                logger.info(f"DEBUG: Location comparison result: {is_correct}")
                 
                 # Add anonymous location guess to chat with appropriate emoji
                 from models.database import add_message
@@ -245,28 +247,28 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
                 }, room=lobby.room)
                 
                 if is_correct:
-                    print(f"DEBUG: AI {ai_player.username} correctly guessed the location!")
-                    print(f"DEBUG: Calling game_manager.end_game with winner='ai'")
+                    logger.info(f"DEBUG: AI {ai_player.username} correctly guessed the location!")
+                    logger.info(f"DEBUG: Calling game_manager.end_game with winner='ai'")
                     # AI wins by guessing the location
                     if game_manager:
                         game_manager.end_game(lobby.room, "ai", f"Someone correctly guessed the location: {location}! The AI wins!")
                     else:
-                        print(f"ERROR: game_manager is None, cannot end game!")
+                        logger.error(f"ERROR: game_manager is None, cannot end game!")
                 else:
-                    print(f"DEBUG: AI {ai_player.username} guessed wrong: {location_guess} vs {location}")
+                    logger.info(f"DEBUG: AI {ai_player.username} guessed wrong: {location_guess} vs {location}")
                     # Wrong guess - continue game
                     if game_manager:
                         # Handle turn progression manually to avoid immediate voting
                         _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, lobby.room)
             else:
-                print(f"DEBUG: AI {ai_player.username} not confident enough to guess")
+                logger.info(f"DEBUG: AI {ai_player.username} not confident enough to guess")
                 # No guess - continue game
                 if game_manager:
                     # Handle turn progression manually to avoid immediate voting
                     _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, lobby.room)
             
         except Exception as e:
-            print(f"Error in AI answer: {e}")
+            logger.error(f"Error in AI answer: {e}")
         finally:
             session.close()
     socketio.start_background_task(delayed_answer)
@@ -284,7 +286,7 @@ def _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, 
         
         # Increment question count
         lobby.question_count += 1
-        print(f"DEBUG: Question count incremented to {lobby.question_count}")
+        logger.info(f"DEBUG: Question count incremented to {lobby.question_count}")
         session.commit()
         
         # Send question count update to all players
@@ -297,12 +299,12 @@ def _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, 
         
         # Move to next turn (no automatic voting)
         lobby.turn += 1
-        print(f"DEBUG: Turn incremented to {lobby.turn}")
+        logger.info(f"DEBUG: Turn incremented to {lobby.turn}")
         session.commit()
         game_manager.start_next_turn(room)
         
     except Exception as e:
-        print(f"Error in AI answer turn progression: {e}")
+        logger.error(f"Error in AI answer turn progression: {e}")
     finally:
         session.close()
 
@@ -313,12 +315,12 @@ def ai_vote_with_delay(socketio, lobby, players, ai_sid, game_manager=None, dela
         voted_for = ai_vote_random(players, ai_sid)
         if voted_for:
             if voted_for == 'pass':
-                print(f"DEBUG: AI {ai_sid} chose to pass")
+                logger.info(f"DEBUG: AI {ai_sid} chose to pass")
             else:
                 # Find the player name for logging
                 target_player = next((p for p in players if p.sid == voted_for), None)
                 target_name = target_player.username if target_player else voted_for
-                print(f"DEBUG: AI {ai_sid} voting for {target_name} (SID: {voted_for})")
+                logger.info(f"DEBUG: AI {ai_sid} voting for {target_name} (SID: {voted_for})")
             
             if game_manager:
                 game_manager.handle_vote(ai_sid, voted_for, lobby.room)
@@ -333,9 +335,9 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
         for qa in previous_qa_pairs:
             context += f"Q: {qa['question']}\nA: {qa['answer']}\n"
         
-        print(f"DEBUG: Location guess - Question count: {question_count}")
-        print(f"DEBUG: Location guess - Context length: {len(context)}")
-        print(f"DEBUG: Location guess - Context: {context}")
+        logger.info(f"DEBUG: Location guess - Question count: {question_count}")
+        logger.info(f"DEBUG: Location guess - Context length: {len(context)}")
+        logger.info(f"DEBUG: Location guess - Context: {context}")
         
         if question_count >= 3:
             # After question 3, force a guess with a very aggressive prompt
@@ -360,7 +362,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             
             IMPORTANT: Return ONLY the location name from the list, nothing else."""
 
-            print(f"DEBUG: Sending forced guess prompt to GPT-4o")
+            logger.info(f"DEBUG: Sending forced guess prompt to GPT-4o")
             response = get_openai_client().chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -372,7 +374,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             )
             
             guess = response.choices[0].message.content.strip()
-            print(f"DEBUG: GPT-4o forced guess response: '{guess}'")
+            logger.info(f"DEBUG: GPT-4o forced guess response: '{guess}'")
             
             # Clean up and extract location
             guess = guess.replace('"', '').replace("'", '').strip()
@@ -380,7 +382,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             # Extract location name from response - look for exact matches first
             for loc in LOCATIONS:
                 if loc.lower() in guess.lower():
-                    print(f"DEBUG: Found location match: {loc}")
+                    logger.info(f"DEBUG: Found location match: {loc}")
                     return loc
             
             # If no exact match, try to extract any capitalized words that might be locations
@@ -391,7 +393,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
                     # Check if this word matches any location
                     for loc in LOCATIONS:
                         if loc.lower() == word_clean.lower():
-                            print(f"DEBUG: Found location match from word extraction: {loc}")
+                            logger.info(f"DEBUG: Found location match from word extraction: {loc}")
                             return loc
             
             return "Unknown"
@@ -430,7 +432,7 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             
             Based on all this information, can you guess which Spyfall location the other players know? If you see ANY clues, what is your best guess from the available options? If absolutely no clues, say "NO_GUESS"."""
 
-            print(f"DEBUG: Sending regular guess prompt to GPT-4o")
+            logger.info(f"DEBUG: Sending regular guess prompt to GPT-4o")
             response = get_openai_client().chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -442,23 +444,23 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
             )
             
             guess = response.choices[0].message.content.strip()
-            print(f"DEBUG: GPT-4o regular guess response: '{guess}'")
+            logger.info(f"DEBUG: GPT-4o regular guess response: '{guess}'")
             
             # Clean up the response
             if "NO_GUESS" in guess.upper() or "NOT CONFIDENT" in guess.upper() or "NOT SURE" in guess.upper():
-                print(f"DEBUG: AI returned NO_GUESS - not confident enough")
+                logger.info(f"DEBUG: AI returned NO_GUESS - not confident enough")
                 return None
             
             # Extract location name (remove quotes, extra text, etc.)
             guess = guess.replace('"', '').replace("'", '').strip()
             if guess.lower() in ['no guess', 'not sure', 'i don\'t know', 'i don\'t have enough information']:
-                print(f"DEBUG: AI returned no guess after cleanup")
+                logger.info(f"DEBUG: AI returned no guess after cleanup")
                 return None
             
             # Extract location name from response - look for exact matches first
             for loc in LOCATIONS:
                 if loc.lower() in guess.lower():
-                    print(f"DEBUG: Found location match: {loc}")
+                    logger.info(f"DEBUG: Found location match: {loc}")
                     return loc
             
             # If no exact match, try to extract any capitalized words that might be locations
@@ -469,14 +471,14 @@ def generate_location_guess(question, answer, previous_qa_pairs, location, quest
                     # Check if this word matches any location
                     for loc in LOCATIONS:
                         if loc.lower() == word_clean.lower():
-                            print(f"DEBUG: Found location match from word extraction: {loc}")
+                            logger.info(f"DEBUG: Found location match from word extraction: {loc}")
                             return loc
                 
-            print(f"DEBUG: AI returning guess: {guess}")
+            logger.info(f"DEBUG: AI returning guess: {guess}")
             return guess
         
     except Exception as e:
-        print(f"Error generating location guess: {e}")
+        logger.error(f"Error generating location guess: {e}")
         if question_count >= 3:
             return "Unknown"  # Force a guess after Q3 even on error
         return None 

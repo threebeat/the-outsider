@@ -18,16 +18,20 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
+# SocketIO configuration optimized for Render
 socketio = SocketIO(
     app,
     cors_allowed_origins=CORS_ORIGINS,
-    async_mode="eventlet" if os.environ.get("RENDER", "") == "true" else None,
     ping_timeout=60,
-    ping_interval=25
+    ping_interval=25,
+    logger=True,
+    engineio_logger=True,
+    async_handlers=True
 )
 
 # Reset database on startup
-print("Resetting database on startup...")
+logger.info("Resetting database on startup...")
 
 # Preserve win counter before reset
 session = SessionLocal()
@@ -39,9 +43,9 @@ try:
             'human_wins': win_counter.human_wins,
             'ai_wins': win_counter.ai_wins
         }
-        print(f"Preserving win counter: {win_counter_data}")
+        logger.info(f"Preserving win counter: {win_counter_data}")
     except Exception as e:
-        print(f"Could not preserve win counter: {e}")
+        logger.error(f"Could not preserve win counter: {e}")
         win_counter_data = {'human_wins': 0, 'ai_wins': 0}
 finally:
     session.close()
@@ -61,13 +65,13 @@ if win_counter_data:
         )
         session.add(new_counter)
         session.commit()
-        print(f"Win counter restored: {win_counter_data}")
+        logger.info(f"Win counter restored: {win_counter_data}")
     except Exception as e:
-        print(f"Error restoring win counter: {e}")
+        logger.error(f"Error restoring win counter: {e}")
     finally:
         session.close()
 
-print("Database reset complete!")
+logger.info("Database reset complete!")
 
 game_manager = GameManager(socketio)
 
@@ -80,6 +84,17 @@ def test_event(data):
 @socketio.on('connect')
 def handle_connect():
     logger.info("Client connected!")
+    # Send a simple test message to verify connection
+    emit('connection_test', {'message': 'Connection established successfully!'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logger.info("Client disconnected!")
+
+@socketio.on_error_default
+def default_error_handler(e):
+    logger.error(f"SocketIO default error: {e}")
+    emit('error', {'message': 'An error occurred. Please try again.'})
 
 @socketio.on('*')
 def catch_all(event, data):
@@ -99,9 +114,9 @@ def send_win_counter_on_startup():
             'human_wins': win_counter.human_wins,
             'ai_wins': win_counter.ai_wins
         }, room="main")
-        print(f"Sent win counter on startup: {win_counter.human_wins} humans, {win_counter.ai_wins} AI")
+        logger.info(f"Sent win counter on startup: {win_counter.human_wins} humans, {win_counter.ai_wins} AI")
     except Exception as e:
-        print(f"Error sending win counter on startup: {e}")
+        logger.error(f"Error sending win counter on startup: {e}")
     finally:
         session.close()
 
@@ -119,6 +134,10 @@ startup_timer.start()
 @app.route('/')
 def index():
     return render_template('game.html')
+
+@app.route('/health')
+def health_check():
+    return {'status': 'healthy', 'message': 'The Outsider game server is running'}
 
 if __name__ == '__main__':
     logger.info("Starting Flask-SocketIO app...")
