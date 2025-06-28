@@ -1,6 +1,6 @@
 from flask import request
 from flask_socketio import join_room, emit
-from models.database import SessionLocal, get_lobby, get_players, get_player_by_sid, get_player_by_username, add_message, get_win_counter
+from models.database import SessionLocal, get_lobby, get_players, get_player_by_sid, get_player_by_username, add_message, get_win_counter, get_db_session, close_db_session
 from game.logic import GameManager
 from game.ai import get_random_ai_name
 from config.settings import DEBUG
@@ -41,7 +41,17 @@ def register_handlers(socketio, game_manager):
 
     @socketio.on('join')
     def on_join(data):
+        """Handle player join request."""
         logger.info(f"Join event received with data: {data}")
+        username = data.get('username', '').strip()
+        current_sid = request.sid
+        room = 'main'
+        
+        logger.info(f"Processing join for username: {username}, current_sid: {current_sid}, room: {room}")
+        
+        if not username:
+            emit('game_update', {'log': 'Username is required.'}, room=current_sid)
+            return
         
         # Check if game is currently resetting
         if _game_manager.is_resetting:
@@ -49,16 +59,13 @@ def register_handlers(socketio, game_manager):
             emit('game_update', {
                 'log': 'Game is currently resetting. Please wait a moment and try again.',
                 'error': True
-            }, room=request.sid)
+            }, room=current_sid)
             return
         
-        session = SessionLocal()
+        # Use improved session management
+        session = None
         try:
-            username = data.get('username')
-            current_sid = request.sid
-            room = data.get('room', 'main')
-            logger.info(f"Processing join for username: {username}, current_sid: {current_sid}, room: {room}")
-            
+            session = get_db_session()
             lobby = get_lobby(session, room)
             
             # Check if a game is already in progress
@@ -89,7 +96,7 @@ def register_handlers(socketio, game_manager):
                     'message': f'Game in progress! You are spectating as {username}.',
                     'players': player_names,
                     'question_count': lobby.question_count,
-                    'questions_until_vote': max(0, 3 - lobby.question_count)
+                    'questions_until_vote': max(0, 5 - lobby.question_count)
                 }, room=current_sid)
                 
                 # Only send a chat message notification, don't update the player list for active players
@@ -176,7 +183,8 @@ def register_handlers(socketio, game_manager):
             logger.error(f"Error in on_join: {e}")
             emit('game_update', {'log': 'An error occurred while joining the game.'}, room=request.sid)
         finally:
-            session.close()
+            if session:
+                close_db_session(session)
 
     @socketio.on('start_game')
     def handle_start_game(data):
@@ -213,8 +221,11 @@ def register_handlers(socketio, game_manager):
         print(f"=== ASK QUESTION EVENT RECEIVED ===")
         print(f"Data: {data}")
         print(f"Request SID: {request.sid}")
-        session = SessionLocal()
+        
+        # Use improved session management
+        session = None
         try:
+            session = get_db_session()
             room = 'main'
             asker_sid = request.sid
             question = data.get('question')
@@ -239,11 +250,14 @@ def register_handlers(socketio, game_manager):
             logger.error(f"Error in ask_question: {e}")
             emit('game_update', {'log': 'An error occurred while asking a question.'}, room=request.sid)
         finally:
-            session.close()
+            if session:
+                close_db_session(session)
 
     @socketio.on('submit_answer')
     def on_submit_answer(data):
+        session = None
         try:
+            session = get_db_session()
             room = 'main'
             target_sid = request.sid
             answer = data.get('answer')
@@ -251,10 +265,15 @@ def register_handlers(socketio, game_manager):
         except Exception as e:
             logger.error(f"Error in submit_answer: {e}")
             emit('game_update', {'log': 'An error occurred while submitting an answer.'}, room=request.sid)
+        finally:
+            if session:
+                close_db_session(session)
 
     @socketio.on('submit_vote')
     def on_submit_vote(data):
+        session = None
         try:
+            session = get_db_session()
             room = 'main'
             voter_sid = request.sid
             voted_for_sid = data.get('voted_for_sid')
@@ -262,11 +281,16 @@ def register_handlers(socketio, game_manager):
         except Exception as e:
             logger.error(f"Error in submit_vote: {e}")
             emit('game_update', {'log': 'An error occurred while submitting your vote.'}, room=request.sid)
+        finally:
+            if session:
+                close_db_session(session)
 
     @socketio.on('request_vote')
     def on_request_vote(data):
         """Handle a player's request to start voting."""
+        session = None
         try:
+            session = get_db_session()
             room = 'main'
             requester_sid = request.sid
             success, message = _game_manager.request_vote(requester_sid, room)
@@ -281,6 +305,9 @@ def register_handlers(socketio, game_manager):
         except Exception as e:
             logger.error(f"Error in request_vote: {e}")
             emit('game_update', {'log': 'An error occurred while requesting a vote.'}, room=request.sid)
+        finally:
+            if session:
+                close_db_session(session)
 
     @socketio.on('typing_start')
     def on_typing_start(data):

@@ -1,7 +1,12 @@
 import random
 import threading
 import time
-from models.database import SessionLocal, get_lobby, get_players, get_player_by_sid, add_message, clear_votes, get_vote_count, increment_human_wins, increment_ai_wins, get_win_counter
+from models.database import (
+    SessionLocal, get_lobby, get_players, get_player_by_sid, 
+    add_message, clear_votes, get_vote_count, get_messages,
+    get_win_counter, increment_human_wins, increment_ai_wins,
+    get_db_session, close_db_session
+)
 from utils.constants import LOCATIONS
 from game.ai import ai_ask_question_with_delay, ai_answer_with_delay, ai_vote_with_delay
 
@@ -15,8 +20,9 @@ class GameManager:
     
     def start_game(self, room="main"):
         """Start a new game."""
-        session = SessionLocal()
+        session = None
         try:
+            session = get_db_session()
             lobby = get_lobby(session, room)
             players = get_players(session, lobby)
             
@@ -77,12 +83,14 @@ class GameManager:
             print(f"Error starting game: {e}")
             return False, "Error starting game"
         finally:
-            session.close()
+            if session:
+                close_db_session(session)
     
     def start_next_turn(self, room="main"):
         """Start the next turn in the game."""
-        session = SessionLocal()
+        session = None
         try:
+            session = get_db_session()
             lobby = get_lobby(session, room)
             players = get_players(session, lobby)
             
@@ -164,7 +172,8 @@ class GameManager:
         except Exception as e:
             print(f"Error starting next turn: {e}")
         finally:
-            session.close()
+            if session:
+                close_db_session(session)
     
     def handle_question(self, asker_sid, target_sid, question, room="main"):
         """Handle a question being asked."""

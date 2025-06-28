@@ -10,9 +10,39 @@ Base = declarative_base()
 if DATABASE_URL.startswith('sqlite'):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    engine = create_engine(DATABASE_URL)
+    # For PostgreSQL, use connection pooling
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+        pool_recycle=300
+    )
 
-SessionLocal = scoped_session(sessionmaker(bind=engine))
+# Create session factory with thread-local scope
+SessionLocal = scoped_session(sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False
+))
+
+def get_db_session():
+    """Get a database session with proper cleanup."""
+    session = SessionLocal()
+    try:
+        return session
+    except Exception as e:
+        session.close()
+        raise e
+
+def close_db_session(session):
+    """Safely close a database session."""
+    try:
+        session.close()
+    except Exception as e:
+        print(f"Error closing session: {e}")
+        # Force remove the session from the registry
+        SessionLocal.remove()
 
 # Database Models
 class Lobby(Base):
