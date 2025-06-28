@@ -19,15 +19,15 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
-# SocketIO configuration optimized for Render
+# SocketIO configuration with eventlet for Render compatibility
 socketio = SocketIO(
     app,
     cors_allowed_origins=CORS_ORIGINS,
+    async_mode="eventlet",
     ping_timeout=60,
     ping_interval=25,
     logger=True,
-    engineio_logger=True,
-    async_handlers=True
+    engineio_logger=True
 )
 
 # Reset database on startup

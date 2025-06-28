@@ -2,6 +2,7 @@ import os
 import logging
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+from sqlalchemy.pool import NullPool
 from config.settings import DATABASE_URL
 
 logger = logging.getLogger(__name__)
@@ -9,12 +10,15 @@ logger = logging.getLogger(__name__)
 # Database Setup
 Base = declarative_base()
 
-# Create engine with appropriate settings
+# Create engine with NullPool to avoid concurrency conflicts with eventlet
+# NullPool creates a new connection for each request and closes it immediately,
+# avoiding the locking issues that occur with SQLAlchemy's default QueuePool
+# when used with eventlet's greenlet-based concurrency
 if DATABASE_URL.startswith('sqlite'):
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=NullPool)
 else:
-    # For PostgreSQL, use simpler configuration
-    engine = create_engine(DATABASE_URL)
+    # For PostgreSQL, use NullPool to avoid eventlet concurrency issues
+    engine = create_engine(DATABASE_URL, poolclass=NullPool)
 
 # Create simple session factory
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
