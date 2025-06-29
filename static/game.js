@@ -46,7 +46,8 @@ document.addEventListener('DOMContentLoaded', () => {
         isSpectator: false,
         isTyping: false,
         typingTimeout: null,
-        socket: null
+        socket: null,
+        roomJoined: false
     };
 
     // --- Helper Functions (UI & Logic) ---
@@ -134,6 +135,13 @@ document.addEventListener('DOMContentLoaded', () => {
      * @param {{ask: boolean, answer: boolean, vote: boolean}} visibility
      */
     function setFormVisibility({ ask = false, answer = false, vote = false }) {
+        console.log('=== SET_FORM_VISIBILITY CALLED ===');
+        console.log('Parameters:', { ask, answer, vote });
+        console.log('Before changes:');
+        console.log('- Ask form hidden:', DOM.askForm.classList.contains('hidden'));
+        console.log('- Answer form hidden:', DOM.answerForm.classList.contains('hidden'));
+        console.log('- Vote form hidden:', DOM.voteForm.classList.contains('hidden'));
+        
         DOM.askForm.classList.toggle('hidden', !ask);
         DOM.answerForm.classList.toggle('hidden', !answer);
         DOM.voteForm.classList.toggle('hidden', !vote);
@@ -141,6 +149,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Enable/disable inputs to prevent interaction with hidden forms
         [DOM.questionInput, DOM.targetPlayerSelect, DOM.askBtn].forEach(el => el.disabled = !ask);
         [DOM.answerInput, DOM.answerBtn].forEach(el => el.disabled = !answer);
+
+        console.log('After changes:');
+        console.log('- Ask form hidden:', DOM.askForm.classList.contains('hidden'));
+        console.log('- Answer form hidden:', DOM.answerForm.classList.contains('hidden'));
+        console.log('- Vote form hidden:', DOM.voteForm.classList.contains('hidden'));
+        console.log('- Question input disabled:', DOM.questionInput.disabled);
+        console.log('- Answer input disabled:', DOM.answerInput.disabled);
 
         if (ask) DOM.questionInput.focus();
         if (answer) DOM.answerInput.focus();
@@ -157,7 +172,6 @@ document.addEventListener('DOMContentLoaded', () => {
         DOM.gameForms.classList.add('hidden');
         DOM.playerList.innerHTML = '';
         DOM.questionCounter.classList.add('hidden');
-        setFormVisibility({ ask: false, answer: false, vote: false });
         updateTurnIndicator('Game reset! Enter your name to join a new game.', '#2196f3');
         DOM.usernameInput.value = '';
         DOM.usernameInput.focus();
@@ -195,14 +209,34 @@ document.addEventListener('DOMContentLoaded', () => {
             state.myUsername = username;
             state.socket.emit('join', { username: state.myUsername });
             DOM.loginForm.classList.add('hidden');
-            DOM.gameForms.classList.remove('hidden');
         }
     });
 
     DOM.startGameBtn.addEventListener('click', () => {
-        if (DOM.startGameBtn.disabled) return;
+        console.log('=== START GAME BUTTON CLICKED ===');
+        console.log('Button disabled state:', DOM.startGameBtn.disabled);
+        console.log('Button hidden state:', DOM.startGameBtn.classList.contains('hidden'));
+        console.log('Current time:', Date.now());
+        console.log('Room joining status:');
+        console.log('- Has joined room:', state.socket.connected);
+        console.log('- Room joined event received:', state.roomJoined || false);
+        console.log('- Socket connected:', state.socket.connected);
+        console.log('- Is spectator:', state.isSpectator);
+        
+        if (DOM.startGameBtn.disabled) {
+            console.log('Start button is disabled, ignoring click');
+            return;
+        }
+        
+        if (DOM.startGameBtn.classList.contains('hidden')) {
+            console.log('Start button is hidden, ignoring click');
+            return;
+        }
+        
+        console.log('Emitting start_game event...');
         state.socket.emit('start_game', {});
         DOM.startGameBtn.disabled = true;
+        console.log('Start button disabled after click');
     });
 
     DOM.manualResetBtn.addEventListener('click', () => {
@@ -219,7 +253,8 @@ document.addEventListener('DOMContentLoaded', () => {
             state.socket.emit('ask_question', { question, target });
             DOM.questionInput.value = '';
             stopTyping();
-            setFormVisibility({ ask: false });
+            // Don't hide the form immediately - let the server's turn_update event control visibility
+            // setFormVisibility({ ask: false });
             updateTurnIndicator(`Question sent to ${target}!`, '#4caf50');
         }
     });
@@ -231,7 +266,8 @@ document.addEventListener('DOMContentLoaded', () => {
             state.socket.emit('submit_answer', { answer });
             DOM.answerInput.value = '';
             stopTyping();
-            setFormVisibility({ answer: false });
+            // Don't hide the form immediately - let the server's turn_update event control visibility
+            // setFormVisibility({ answer: false });
             updateTurnIndicator('Answer sent!', '#4caf50');
         }
     });
@@ -255,14 +291,21 @@ document.addEventListener('DOMContentLoaded', () => {
         state.socket = io({ transports: ['websocket', 'polling'] });
 
         // Welcome messages
-        addMessageToLog('👋 Welcome to The Outsider!', 'system');
+    addMessageToLog('👋 Welcome to The Outsider!', 'system');
         addMessageToLog('The AI is always the Outsider - humans must work together to identify and vote it out!', 'info');
-
+    
         // --- Core Connection Handlers ---
         state.socket.on('connect', () => {
-            console.log('Connected to server!');
+        console.log('Connected to server!');
             addMessageToLog('Connected to game server!', 'success');
             state.socket.emit('join_room', { room: 'main' });
+        });
+
+        state.socket.on('room_joined', (data) => {
+            console.log('=== ROOM_JOINED EVENT RECEIVED ===');
+            console.log('Room joined:', data);
+            addMessageToLog(`Joined room: ${data.room}`, 'success');
+            state.roomJoined = true;
         });
 
         state.socket.on('disconnect', () => {
@@ -271,6 +314,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         state.socket.on('connect_error', (error) => {
             addMessageToLog(`Connection error: ${error.message}`, 'error');
+        });
+
+        // Debug: Listen for all events
+        state.socket.onAny((eventName, ...args) => {
+            console.log(`=== RECEIVED EVENT: ${eventName} ===`);
+            console.log('Event args:', args);
+            
+            // Special debugging for turn_update events
+            if (eventName === 'turn_update') {
+                console.log('=== TURN_UPDATE EVENT DETECTED BY ONANY ===');
+                console.log('Turn update data:', args[0]);
+                console.log('Current time:', Date.now());
+            }
+            
+            // Special debugging for game_started events
+            if (eventName === 'game_started') {
+                console.log('=== GAME_STARTED EVENT DETECTED BY ONANY ===');
+                console.log('Game started data:', args[0]);
+                console.log('Current time:', Date.now());
+            }
         });
 
         // --- Game State Handlers ---
@@ -288,18 +351,35 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        console.log('Registering game_started event handler...');
         state.socket.on('game_started', (data) => {
+            console.log('=== GAME_STARTED EVENT RECEIVED ===');
             console.log('Game Started:', data);
+            console.log('Data type:', typeof data);
+            console.log('Data keys:', Object.keys(data));
+            console.log('Location:', data.location);
+            console.log('Players:', data.players);
+            console.log('Current UI state:');
+            console.log('- Login form hidden:', DOM.loginForm.classList.contains('hidden'));
+            console.log('- Game forms hidden:', DOM.gameForms.classList.contains('hidden'));
+            console.log('- Start button hidden:', DOM.startGameBtn.classList.contains('hidden'));
+            console.log('- Start button disabled:', DOM.startGameBtn.disabled);
+            console.log('- myUsername:', state.myUsername);
+            
             state.isSpectator = false;
             DOM.myRole.textContent = `You are: ${state.myUsername}`;
             DOM.myLocation.textContent = `Location: ${data.location}`;
             DOM.startGameBtn.classList.add('hidden');
+            console.log('Start button hidden after game started');
             DOM.questionCounter.classList.remove('hidden');
             updateQuestionCounter({ question_count: 0, questions_until_vote: 5 });
             setFormVisibility({}); // Hide all forms
             updateTurnIndicator('Waiting for first question...');
             updatePlayerList(data.players); // Ensure player list is updated
+            DOM.gameForms.classList.remove('hidden');
+            console.log('Game forms shown after game started');
         });
+        console.log('game_started event handler registered');
 
         state.socket.on('spectator_mode', (data) => {
             console.log('Spectator Mode:', data);
@@ -308,6 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
             DOM.myLocation.textContent = "Location: ???";
             DOM.startGameBtn.classList.add('hidden');
             DOM.questionCounter.classList.remove('hidden');
+            DOM.gameForms.classList.remove('hidden');
             setFormVisibility({}); // Hide all forms
             updateTurnIndicator("👁️ Spectating - Watch the game!", '#666');
             if (data.question_count !== undefined) updateQuestionCounter(data);
@@ -315,11 +396,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         state.socket.on('game_reset', (data) => {
-            resetUIForNewGame();
-            if (data.message && data.message.includes('Manual reset')) {
-                DOM.humanWinsDisplay.textContent = '0';
-                DOM.aiWinsDisplay.textContent = '0';
+            // Display the reset message from the server before clearing the UI
+            if (data.message) {
+                addMessageToLog(data.message, 'system');
             }
+            
+            resetUIForNewGame();
+            // Win counter is now persistent across all resets (including manual resets)
+            // No longer reset win counter for any type of reset
         });
 
         state.socket.on('game_ended', (data) => {
@@ -331,7 +415,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // --- Turn & Action Handlers ---
         state.socket.on('turn_update', (data) => {
+            console.log('=== TURN_UPDATE EVENT RECEIVED ===');
             console.log('Turn Update:', data);
+        console.log('Data type:', typeof data);
+        console.log('Data keys:', Object.keys(data));
+            console.log('My username:', state.myUsername);
+        console.log('Is my turn to ask:', data.is_my_turn_to_ask);
+        console.log('Is my turn to answer:', data.is_my_turn_to_answer);
+        console.log('Can ask:', data.can_ask);
+        console.log('Can answer:', data.can_answer);
+        console.log('Current form states:');
+            console.log('- Ask form hidden:', DOM.askForm.classList.contains('hidden'));
+            console.log('- Answer form hidden:', DOM.answerForm.classList.contains('hidden'));
+            console.log('- Question input disabled:', DOM.questionInput.disabled);
+            console.log('- Answer input disabled:', DOM.answerInput.disabled);
+            
             if (state.isSpectator) {
                 updateTurnIndicator(`${data.current_asker} is asking ${data.current_target || '...'}`, '#666');
                 return;
@@ -343,19 +441,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateTurnIndicator("It's your turn to ask a question!", '#4caf50');
             } else if (data.is_my_turn_to_answer) {
                 updateTurnIndicator(`${data.current_asker} is asking you a question!`, '#ff9800');
-            } else {
+        } else {
                 updateTurnIndicator(`${data.current_asker} is asking ${data.current_target || '...'}`, '#666');
             }
         });
 
         state.socket.on('spectator_turn_update', (data) => {
             console.log('Spectator Turn Update:', data);
-            
-            // Only update turn indicator for spectators (don't change forms)
-            if (data.current_asker) {
-                if (data.current_target) {
+        
+        // Only update turn indicator for spectators (don't change forms)
+        if (data.current_asker) {
+            if (data.current_target) {
                     updateTurnIndicator(`${data.current_asker} is asking ${data.current_target} a question.`, '#666');
-                } else {
+            } else {
                     updateTurnIndicator(`${data.current_asker} is thinking of a question...`, '#666');
                 }
             }
@@ -366,20 +464,20 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         state.socket.on('ai_question', (data) => {
-            console.log('AI question:', data);
-            
-            // Get AI player name from the target SID
-            const aiPlayer = data.target; // This should be the AI's SID
-            const aiName = aiPlayer.replace('ai_', ''); // Extract name from SID like "ai_Sam"
-            
-            // Add AI question to chat
+        console.log('AI question:', data);
+        
+        // Get AI player name from the target SID
+        const aiPlayer = data.target; // This should be the AI's SID
+        const aiName = aiPlayer.replace('ai_', ''); // Extract name from SID like "ai_Sam"
+        
+        // Add AI question to chat
             addMessageToLog(`<strong>${aiName}</strong> asks: ${data.question}`, 'question');
-            
-            // Update turn indicator immediately
+        
+        // Update turn indicator immediately
             if (data.target_sid === state.myUsername) {
                 updateTurnIndicator(`${aiName} is asking you a question!`, '#ff9800');
                 setFormVisibility({ answer: true });
-            } else {
+        } else {
                 updateTurnIndicator(`${aiName} is asking ${data.target} a question.`, '#666');
                 setFormVisibility({});
             }
@@ -390,21 +488,21 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         
         state.socket.on('ai_answer', (data) => {
-            console.log('AI answer:', data);
-            
-            // Add AI answer to chat
+        console.log('AI answer:', data);
+        
+        // Add AI answer to chat
             addMessageToLog(`<strong>${data.target}</strong> answers: ${data.answer}`, 'answer');
-            
-            // Clear answer form and disable inputs (in case this player was answering)
+        
+        // Clear answer form and disable inputs (in case this player was answering)
             setFormVisibility({});
             updateTurnIndicator('Processing answer...', '#666');
         });
         
         state.socket.on('location_guess_made', (data) => {
-            console.log('Location guess made:', data);
-            
-            // Add anonymous location guess to chat with appropriate emoji
-            const emoji = data.is_correct ? "🎯" : "❌";
+        console.log('Location guess made:', data);
+        
+        // Add anonymous location guess to chat with appropriate emoji
+        const emoji = data.is_correct ? "🎯" : "❌";
             addMessageToLog(`<strong>${emoji} ${data.message}</strong>`, data.is_correct ? 'success' : 'error');
         });
         
@@ -423,13 +521,13 @@ document.addEventListener('DOMContentLoaded', () => {
             DOM.submitVoteBtn.textContent = 'Submit Vote';
 
             const createVoteOption = (text, sid) => {
-                const option = document.createElement('div');
-                option.className = 'vote-option';
+                    const option = document.createElement('div');
+                    option.className = 'vote-option';
                 option.textContent = text;
                 option.dataset.sid = sid;
-                option.addEventListener('click', () => {
+                    option.addEventListener('click', () => {
                     document.querySelectorAll('.vote-option.selected').forEach(opt => opt.classList.remove('selected'));
-                    option.classList.add('selected');
+                        option.classList.add('selected');
                     state.selectedVoteTarget = sid;
                     DOM.submitVoteBtn.disabled = false;
                     DOM.submitVoteBtn.textContent = `Vote for ${text}`;
@@ -447,9 +545,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
         state.socket.on('voting_results', (data) => {
             addMessageToLog(data.message, 'vote');
-            if (data.all_passed) {
+        if (data.all_passed) {
                 setFormVisibility({}); // Hide vote form, next turn_update will show correct form
                 updateTurnIndicator('🤝 Everyone passed! Game continues...', '#4caf50');
+            }
+        });
+
+        state.socket.on('vote_status_update', (data) => {
+            console.log('Vote Status Update:', data);
+            addMessageToLog(`📊 ${data.message}`, 'system');
+            
+            // Update turn indicator with voting progress
+            if (data.total_votes < data.total_players) {
+                updateTurnIndicator(`🗳️ Voting in progress... ${data.total_votes}/${data.total_players} votes`, '#ff9800');
+            } else {
+                updateTurnIndicator('🗳️ All votes received! Processing results...', '#4caf50');
             }
         });
 

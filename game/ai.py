@@ -101,18 +101,12 @@ def generate_ai_question(target_name):
         return f"What's your favorite thing about this place?"
 
 def ai_vote_random(players, ai_sid):
-    """AI votes for a random player (excluding itself) or passes."""
+    """AI votes for a random player (excluding itself), never passes."""
+    # Only vote for human players (never pass)
     human_players = [p for p in players if p.sid != ai_sid and not p.is_ai]
-    
-    # Create options: all human players + pass
-    options = human_players + ['pass']
-    
-    if options:
-        choice = random.choice(options)
-        if choice == 'pass':
-            return 'pass'
-        else:
-            return choice.sid
+    if human_players:
+        choice = random.choice(human_players)
+        return choice.sid
     return None
 
 def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location, game_manager=None, delay=3):
@@ -151,6 +145,23 @@ def ai_ask_question_with_delay(socketio, lobby, asker_sid, target_sid, location,
             logger.info(f"question_asked event emitted to all human SIDs")
             logger.info(f"Event data sent: asker={question_data['asker']}, target={question_data['target']}, question={question_data['question']}")
             logger.info(f"AI {ai_player.username} asked: {question}")
+            
+            # Send turn_update to the human player to tell them it's their turn to answer
+            if target_player and not target_player.is_ai:
+                turn_data = {
+                    'current_asker': ai_player.username,
+                    'current_target': target_player.username,
+                    'is_my_turn_to_ask': False,
+                    'is_my_turn_to_answer': True,
+                    'can_ask': False,
+                    'can_answer': True,
+                    'turn': lobby.turn + 1,
+                    'total_players': len(players)
+                }
+                logger.info(f"DEBUG: Sending turn_update to {target_player.username} (SID: {target_sid})")
+                logger.info(f"DEBUG: Turn data: {turn_data}")
+                socketio.emit('turn_update', turn_data, room=target_sid)
+                logger.info(f"DEBUG: Turn update sent to {target_player.username}")
             
             # Resume inactivity timer after AI operation
             if game_manager:
@@ -199,6 +210,14 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
             
             # AI is always the outsider, so always try to guess the location
             logger.info(f"DEBUG: AI {ai_player.username} is outsider, attempting location guess...")
+            
+            # Check if game is already in voting state - if so, skip location guess
+            if lobby.state == 'voting':
+                logger.info(f"DEBUG: Game is in voting state, skipping location guess")
+                # Just handle turn progression without location guess
+                if game_manager:
+                    _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, lobby.room)
+                return
             
             # Get previous Q&A pairs from the game
             messages = get_messages(session, lobby)
@@ -303,31 +322,37 @@ def ai_answer_with_delay(socketio, lobby, target_sid, question, location, game_m
 
 def _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, room):
     """Handle turn progression for AI answers, ensuring location guesses happen before voting."""
-    from models.database import SessionLocal, get_player_by_sid, add_message
+    from models.database import SessionLocal, get_player_by_sid, add_message, get_lobby
     session = SessionLocal()
     try:
+        # Get a fresh lobby object in this session
+        fresh_lobby = get_lobby(session, room)
+        if not fresh_lobby:
+            logger.error(f"ERROR: Could not find lobby for room {room}")
+            return
+        
         # Add the AI answer to the database
-        target = get_player_by_sid(session, lobby, target_sid)
+        target = get_player_by_sid(session, fresh_lobby, target_sid)
         if target:
             message = f"{target.username} answers: {answer}"
-            add_message(session, lobby, message)
+            add_message(session, fresh_lobby, message)
         
         # Increment question count
-        lobby.question_count += 1
-        logger.info(f"DEBUG: Question count incremented to {lobby.question_count}")
+        fresh_lobby.question_count += 1
+        logger.info(f"DEBUG: Question count incremented to {fresh_lobby.question_count}")
         session.commit()
         
         # Send question count update to all players
-        questions_until_vote = max(0, 5 - lobby.question_count)
+        questions_until_vote = max(0, 5 - fresh_lobby.question_count)
         game_manager.socketio.emit('question_count_update', {
-            'question_count': lobby.question_count,
+            'question_count': fresh_lobby.question_count,
             'questions_until_vote': questions_until_vote,
-            'can_vote': lobby.question_count >= 5
+            'can_vote': fresh_lobby.question_count >= 5
         }, room=room)
         
         # Move to next turn (no automatic voting)
-        lobby.turn += 1
-        logger.info(f"DEBUG: Turn incremented to {lobby.turn}")
+        fresh_lobby.turn += 1
+        logger.info(f"DEBUG: Turn incremented to {fresh_lobby.turn}")
         session.commit()
         game_manager.start_next_turn(room)
         
@@ -338,6 +363,10 @@ def _handle_ai_answer_turn_progression(game_manager, lobby, answer, target_sid, 
 
 def ai_vote_with_delay(socketio, lobby, players, ai_sid, game_manager=None, delay=1):
     """AI votes after a delay."""
+    # Get the room name before the lobby object becomes detached
+    room = lobby.room if hasattr(lobby, 'room') else 'main'
+    logger.info(f"DEBUG: AI voting setup for room: {room}")
+    
     def delayed_vote():
         socketio.sleep(delay)
         voted_for = ai_vote_random(players, ai_sid)
@@ -351,7 +380,8 @@ def ai_vote_with_delay(socketio, lobby, players, ai_sid, game_manager=None, dela
                 logger.info(f"DEBUG: AI {ai_sid} voting for {target_name} (SID: {voted_for})")
             
             if game_manager:
-                game_manager.handle_vote(ai_sid, voted_for, lobby.room)
+                logger.info(f"DEBUG: AI calling handle_vote for room: {room}")
+                game_manager.handle_vote(ai_sid, voted_for, room)
     
     socketio.start_background_task(delayed_vote)
 

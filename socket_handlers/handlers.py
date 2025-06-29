@@ -29,12 +29,20 @@ def register_handlers(socketio, game_manager):
         emit('game_update', {'log': 'An internal error occurred. Please try again.'})
 
     @socketio.on('join_room')
-    def on_join_room(data):
-        logger.info(f"Join room event received: {data}")
+    def handle_join_room(data):
         room = data.get('room', 'main')
+        logger.info(f"Join room event received: {data}")
+        
+        # Join the room
         join_room(room)
         logger.info(f"Client joined room: {room}")
-        # Send confirmation to the client
+        
+        # Debug: Check if client is actually in the room
+        from flask_socketio import rooms
+        client_rooms = rooms()
+        logger.info(f"Client rooms after joining: {client_rooms}")
+        
+        # Send confirmation
         emit('room_joined', {'room': room, 'status': 'success'})
 
     @socketio.on('test_room')
@@ -166,12 +174,21 @@ def register_handlers(socketio, game_manager):
             # Join the room first, then emit
             join_room(room)
             
+            # Debug: Check if client is actually in the room
+            from flask_socketio import rooms
+            client_rooms = rooms()
+            logger.info(f"Client rooms after join_room: {client_rooms}")
+            
             # Broadcast updated player list to all players in the room (including the joining player)
             emit('game_update', {
                 'players': player_names,
                 'log': f"{username} has joined the room.",
                 'can_start_game': len(updated_players) >= 2
             }, room=room)
+            
+            # Debug: Check room membership after emit
+            room_clients = rooms(room)
+            logger.info(f"Room {room} clients after game_update emit: {room_clients}")
             
             # Send current win counter to the joining player
             win_counter = get_win_counter(session, room)
@@ -200,33 +217,35 @@ def register_handlers(socketio, game_manager):
 
     @socketio.on('start_game')
     def handle_start_game(data):
-        logger.info("Start game event received")
-        room = 'main'
+        logger.info("=== START GAME EVENT RECEIVED ===")
+        logger.info(f"Start game event received with data: {data}")
+        logger.info(f"Request SID: {request.sid}")
         
-        # Join room for this event
-        join_room(room)
-        logger.info(f"Client {request.sid} joined room {room} for start_game")
+        # Debug: Check client rooms
+        from flask_socketio import rooms
+        client_rooms = rooms()
+        logger.info(f"Client rooms at start_game: {client_rooms}")
         
-        # Check if game is currently resetting
-        if _game_manager.is_resetting:
-            logger.info("Game is currently resetting, rejecting start game request")
-            emit('game_update', {
-                'log': 'Game is currently resetting. Please wait a moment and try again.',
-                'error': True
-            }, room=request.sid)
-            return
+        # Ensure client is in the main room
+        join_room('main')
+        logger.info(f"Client {request.sid} joined room main for start_game")
         
-        success, message = _game_manager.start_game(room)
-        if not success:
-            logger.error(f"Failed to start game: {message}")
-            emit('game_update', {'log': message, 'error': True}, room=request.sid)
+        # Call the game manager to start the game
+        logger.info("Calling game_manager.start_game...")
+        success, message = _game_manager.start_game('main')
+        logger.info(f"Game manager start_game result: success={success}, message={message}")
+        
+        if success:
+            logger.info(f"Game started successfully: {message}")
+            emit('game_update', {'log': message})
         else:
-            emit('game_update', {'log': message}, room=request.sid)
+            logger.error(f"Failed to start game: {message}")
+            emit('game_update', {'log': f'Error: {message}', 'error': True})
 
     @socketio.on('manual_reset')
     def handle_manual_reset():
         logger.info("Manual reset event received")
-        _game_manager.reset_game('main')
+        _game_manager.unified_reset('main', "Manual reset", preserve_win_counter=True)
         logger.info("Manual reset completed")
 
     @socketio.on('ask_question')
@@ -287,7 +306,7 @@ def register_handlers(socketio, game_manager):
     @socketio.on('submit_vote')
     def on_submit_vote(data):
         """Handle vote submission."""
-        voted_for = data.get('voted_for', '').strip()
+        voted_for = data.get('voted_for_sid', '').strip()
         voter_sid = request.sid
         room = 'main'
         
@@ -335,5 +354,27 @@ def register_handlers(socketio, game_manager):
         room = 'main'
         join_room(room)
         emit('typing_stop', {'username': data.get('username', 'Unknown')}, room=room, include_self=False)
-    
+
+    @socketio.on('disconnect')
+    def handle_disconnect(sid):
+        logger.info(f"Client disconnected: {sid}")
+        
+        # Debug: Check what rooms the client was in
+        from flask_socketio import rooms
+        client_rooms = rooms(sid)
+        logger.info(f"Client {sid} was in rooms: {client_rooms}")
+        
+        # Remove player from database
+        try:
+            with SessionLocal() as session:
+                player = get_player_by_sid(session, None, sid)
+                if player:
+                    logger.info(f"Removing player {player.username} from database")
+                    session.delete(player)
+                    session.commit()
+                else:
+                    logger.info(f"No player found for SID: {sid}")
+        except Exception as e:
+            logger.error(f"Error removing player on disconnect: {e}")
+
     logger.info("Socket.IO event handlers registered successfully!") 

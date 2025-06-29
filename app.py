@@ -33,43 +33,14 @@ socketio = SocketIO(
 # Reset database on startup
 logger.info("Resetting database on startup...")
 
-# Preserve win counter before reset
-session = SessionLocal()
-try:
-    win_counter_data = None
-    try:
-        win_counter = get_win_counter(session, "main")
-        win_counter_data = {
-            'human_wins': win_counter.human_wins,
-            'ai_wins': win_counter.ai_wins
-        }
-        logger.info(f"Preserving win counter: {win_counter_data}")
-    except Exception as e:
-        logger.error(f"Could not preserve win counter: {e}")
-        win_counter_data = {'human_wins': 0, 'ai_wins': 0}
-finally:
-    session.close()
+# Create game manager first
+game_manager = GameManager(socketio)
 
-# Drop and recreate all tables
-Base.metadata.drop_all(engine)
-Base.metadata.create_all(engine)
+# Perform silent database reset for startup (no clients connected yet)
+game_manager._perform_database_reset("main", preserve_win_counter=True)
 
-# Restore win counter
-if win_counter_data:
-    session = SessionLocal()
-    try:
-        new_counter = WinCounter(
-            room="main",
-            human_wins=win_counter_data['human_wins'],
-            ai_wins=win_counter_data['ai_wins']
-        )
-        session.add(new_counter)
-        session.commit()
-        logger.info(f"Win counter restored: {win_counter_data}")
-    except Exception as e:
-        logger.error(f"Error restoring win counter: {e}")
-    finally:
-        session.close()
+# Clear reset flag to allow new joins and game starts
+game_manager.clear_reset_flag()
 
 logger.info("Database reset complete!")
 
@@ -78,8 +49,6 @@ if not OPENAI_API_KEY:
     logger.warning("WARNING: OPENAI_API_KEY is not set! AI responses will use fallback messages.")
 else:
     logger.info("OpenAI API key is configured.")
-
-game_manager = GameManager(socketio)
 
 # Test event to verify Socket.IO is working
 @socketio.on('test')

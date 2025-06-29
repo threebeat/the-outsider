@@ -6,7 +6,7 @@ from models.database import (
     SessionLocal, get_lobby, get_players, get_player_by_sid, 
     add_message, clear_votes, get_vote_count, get_messages,
     get_win_counter, increment_human_wins, increment_ai_wins,
-    get_db_session, close_db_session
+    get_db_session, close_db_session, Message, Player, Lobby
 )
 from utils.constants import LOCATIONS
 from game.ai import ai_ask_question_with_delay, ai_answer_with_delay, ai_vote_with_delay
@@ -18,20 +18,30 @@ class GameManager:
         self.socketio = socketio
         self.last_activity = time.time()
         self.inactivity_timer = None
+        self.warning_timer = None
         self.is_resetting = False  # Add flag to track reset state
         # Don't start inactivity timer on init - only during active games
     
     def start_game(self, room="main"):
         """Start a new game."""
+        logger.info("=== GAME MANAGER START_GAME CALLED ===")
+        logger.info(f"Starting game for room: {room}")
         session = None
         try:
+            logger.info("Creating database session...")
             session = get_db_session()
+            logger.info("Getting lobby...")
             lobby = get_lobby(session, room)
+            logger.info(f"Got lobby: {lobby.room}, state: {lobby.state}")
+            logger.info("Getting players...")
             players = get_players(session, lobby)
+            logger.info(f"Found {len(players)} players: {[p.username for p in players]}")
             
             if len(players) < 2:
+                logger.warning(f"Not enough players to start game: {len(players)}")
                 return False, "Need at least 2 players to start"
             
+            logger.info("Setting up game state...")
             # Reset game state
             lobby.state = 'playing'
             lobby.location = random.choice(LOCATIONS)
@@ -51,16 +61,43 @@ class GameManager:
             ai_players = [p for p in players if p.is_ai]
             if ai_players:
                 lobby.outsider_sid = ai_players[0].sid  # Just use the first AI player
+                logger.info(f"AI outsider assigned: {ai_players[0].username}")
             
+            logger.info("Committing database changes...")
             session.commit()
+            logger.info("Database changes committed successfully")
             
             # Send game state to all players
+            player_data = [{'sid': p.sid, 'username': p.username, 'is_ai': p.is_ai} for p in players]
             logger.info(f"DEBUG: Sending game_started event with location: {lobby.location}")
             logger.info(f"DEBUG: Emitting to room: {room}")
             logger.info(f"DEBUG: Players in room: {[p.username for p in players]}")
+            
+            # Get all clients in the room for debugging
+            from flask_socketio import rooms
+            room_clients = rooms(room)
+            logger.info(f"DEBUG: Clients in room {room}: {room_clients}")
+            
+            # Debug: Check if any clients are in the room at all
+            all_rooms = rooms()
+            logger.info(f"DEBUG: All rooms: {all_rooms}")
+            
+            # Try sending to individual clients as fallback
+            if not room_clients:
+                logger.info(f"DEBUG: Room is empty, sending to individual clients")
+                for player in players:
+                    if not player.is_ai:
+                        logger.info(f"DEBUG: Sending game_started to {player.username} (SID: {player.sid})")
+                        self.socketio.emit('game_started', {
+                            'location': lobby.location,
+                            'players': player_data,
+                            'player_order': player_sids
+                        }, room=player.sid)
+            
+            # Also try sending to room (in case the rooms() function is wrong)
             self.socketio.emit('game_started', {
                 'location': lobby.location,
-                'players': [{'sid': p.sid, 'username': p.username, 'is_ai': p.is_ai} for p in players],
+                'players': player_data,
                 'player_order': player_sids
             }, room=room)
             logger.info(f"DEBUG: game_started event emitted successfully")
@@ -80,13 +117,17 @@ class GameManager:
             
             # Start inactivity timer only when game starts
             self.update_activity()
+            logger.info("=== GAME STARTED SUCCESSFULLY ===")
             return True, "Game started successfully"
             
         except Exception as e:
             logger.error(f"Error starting game: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False, "Error starting game"
         finally:
             if session:
+                logger.info("Closing database session...")
                 close_db_session(session)
     
     def start_next_turn(self, room="main"):
@@ -133,25 +174,23 @@ class GameManager:
             
             logger.info(f"Turn {lobby.turn}: {asker.username} (SID: {asker_sid}) will ask {target.username} (SID: {target_sid})")
             
-            # Send turn update to all human players
-            for player in players:
-                if not player.is_ai:
-                    is_asking = (player.sid == asker_sid)
-                    is_answering = (player.sid == target_sid)
-                    turn_data = {
-                        'current_asker': asker.username,
-                        'current_target': None,  # Don't show target until question is asked
-                        'is_my_turn_to_ask': is_asking,
-                        'is_my_turn_to_answer': is_answering,
-                        'can_ask': is_asking,
-                        'can_answer': is_answering,
-                        'turn': lobby.turn + 1,
-                        'total_players': len(players)
-                    }
-                    logger.info(f"Sending turn_update to {player.username} (SID: {player.sid})")
-                    logger.info(f"Turn data: {turn_data}")
-                    self.socketio.emit('turn_update', turn_data, room=player.sid)
-                    logger.info(f"Turn update sent to {player.username}")
+            # Send turn update to the asker
+            turn_data = {
+                'current_asker': asker.username,
+                'current_target': None,  # Will be set when question is asked
+                'is_my_turn_to_ask': True,
+                'is_my_turn_to_answer': False,
+                'can_ask': True,
+                'can_answer': False,
+                'turn': lobby.turn + 1,
+                'total_players': len(players)
+            }
+            
+            print(f"DEBUG: Sending turn_update to {asker.username} (SID: {asker_sid})")
+            print(f"DEBUG: Turn data: {turn_data}")
+            
+            self.socketio.emit('turn_update', turn_data, room=asker_sid)
+            print(f"DEBUG: Turn update sent to {asker.username}")
             
             # Send spectator turn update to room (spectators will handle this event)
             spectator_turn_data = {
@@ -212,7 +251,9 @@ class GameManager:
                 players = get_players(session, lobby)
                 for player in players:
                     if not player.is_ai:
-                        is_asking = (player.sid == asker_sid)
+                        # After a question is asked, the asker can no longer ask (they've used their turn)
+                        # Only the target can answer
+                        is_asking = False  # No one can ask after a question is asked
                         is_answering = (player.sid == target_sid)
                         turn_data = {
                             'current_asker': asker.username,
@@ -314,11 +355,21 @@ class GameManager:
             # Clear previous votes
             clear_votes(session, lobby)
             
+            # Add voting start message to chat
+            add_message(session, lobby, "🗳️ Voting has begun! Each player must vote for someone or choose to pass.")
+            
             # Send voting start event to all players
             voting_players = [{'sid': p.sid, 'username': p.username, 'is_ai': p.is_ai} for p in players]
             logger.info(f"DEBUG: Sending voting_started with players: {voting_players}")
             self.socketio.emit('voting_started', {
                 'players': voting_players
+            }, room=room)
+            
+            # Send initial vote status
+            self.socketio.emit('vote_status_update', {
+                'total_votes': 0,
+                'total_players': len(players),
+                'message': f"0/{len(players)} players have voted"
             }, room=room)
             
             # Have AI players vote automatically
@@ -341,6 +392,7 @@ class GameManager:
             lobby = get_lobby(session, room)
             
             if lobby.state != 'voting':
+                logger.info(f"DEBUG: Vote rejected - game state is {lobby.state}")
                 return
             
             from models.database import Vote
@@ -349,11 +401,39 @@ class GameManager:
             session.add(vote)
             session.commit()
             
+            # Get voter and target names for logging
+            voter = get_player_by_sid(session, lobby, voter_sid)
+            if voted_for_sid == 'pass':
+                target_name = 'pass'
+            else:
+                target = get_player_by_sid(session, lobby, voted_for_sid)
+                target_name = target.username if target else voted_for_sid
+            
+            voter_name = voter.username if voter else voter_sid
+            
+            # Add vote message to chat
+            if voted_for_sid == 'pass':
+                message = f"{voter_name} chose to pass"
+            else:
+                message = f"{voter_name} voted for {target_name}"
+            add_message(session, lobby, message)
+            
             # Check if all players have voted
             players = get_players(session, lobby)
             total_votes = session.query(Vote).filter_by(lobby_id=lobby.id).count()
             
+            logger.info(f"DEBUG: Vote recorded - {voter_name} voted for {target_name}")
+            logger.info(f"DEBUG: Total votes: {total_votes}/{len(players)}")
+            
+            # Send vote status update
+            self.socketio.emit('vote_status_update', {
+                'total_votes': total_votes,
+                'total_players': len(players),
+                'message': f"{total_votes}/{len(players)} players have voted"
+            }, room=room)
+            
             if total_votes >= len(players):
+                logger.info(f"DEBUG: All players have voted, processing results...")
                 self.process_voting_results(room)
             
             self.update_activity()
@@ -532,21 +612,64 @@ class GameManager:
                 'message': message
             }, room=room)
             
-            # Stop inactivity timer when game ends
-            self.stop_inactivity_timer()
+            # Use unified reset for game completion
+            self.unified_reset(room, "Game completed", preserve_win_counter=True)
             
+        except Exception as e:
+            logger.error(f"Error ending game: {e}")
+        finally:
+            session.close()
+    
+    def _perform_database_reset(self, room="main", preserve_win_counter=True):
+        """Perform the actual database reset operations."""
+        logger.info(f"DEBUG: Performing database reset for room: {room}")
+        session = SessionLocal()
+        try:
+            # Get current win counter before reset
+            win_counter = get_win_counter(session, room)
+            logger.info(f"DEBUG: Preserving win counter: {{'human_wins': {win_counter.human_wins}, 'ai_wins': {win_counter.ai_wins}}}")
+            
+            # Clear all game data
+            session.query(Message).filter(Message.lobby_id == room).delete()
+            session.query(Player).filter(Player.lobby_id == room).delete()
+            session.query(Lobby).filter(Lobby.id == room).delete()
+            
+            # Create fresh lobby
+            get_lobby(session, room)
+            
+            # Restore win counter if preserving
+            if preserve_win_counter:
+                # The win counter should already exist, but let's make sure it's preserved
+                # The WinCounter table is separate and should persist
+                logger.info(f"DEBUG: Win counter restored: {{'human_wins': {win_counter.human_wins}, 'ai_wins': {win_counter.ai_wins}}}")
+            
+            session.commit()
+            logger.info(f"DEBUG: Database reset completed successfully!")
+            
+        except Exception as e:
+            logger.error(f"Error in database reset: {e}")
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    def unified_reset(self, room="main", reason="", preserve_win_counter=True):
+        """Unified reset function for all reset types."""
+        logger.info(f"DEBUG: Unified reset requested for room: {room}, reason: {reason}")
+        try:
             # Set reset flag to prevent new joins
             self.is_resetting = True
             
-            # Emit reset notification immediately
-            logger.info(f"DEBUG: Emitting immediate reset notification...")
-            self.socketio.emit('game_reset', {
-                'message': '🎮 Game reset! Ready for new players to join and start a new game!'
-            }, room=room)
+            # Stop all timers
+            self.stop_inactivity_timer()
+            self.stop_warning_timer()
             
-            logger.info(f"DEBUG: Performing database reset immediately...")
-            # Perform database reset immediately (not in background)
-            self._perform_database_reset(room, preserve_win_counter=True)
+            # Perform database reset
+            self._perform_database_reset(room, preserve_win_counter=preserve_win_counter)
+            
+            # Send reset message to all clients
+            reset_message = f"🎮 {reason} - Game reset! Ready for new players to join and start a new game!"
+            self.socketio.emit('game_reset', {'message': reset_message}, room=room)
             
             # Send win counter update after database reset completes
             session = SessionLocal()
@@ -563,96 +686,21 @@ class GameManager:
             finally:
                 session.close()
             
-            # Clear reset flag after reset completes
+            # Clear reset flag after a short delay to allow clients to process the reset
+            def clear_flag():
+                time.sleep(1)
+                self.is_resetting = False
+                logger.info(f"DEBUG: Reset flag cleared after {reason}")
+            
+            thread = threading.Thread(target=clear_flag)
+            thread.daemon = True
+            thread.start()
+            
+            logger.info(f"DEBUG: Unified reset completed for {reason}")
+            
+        except Exception as e:
+            logger.error(f"Error in unified reset: {e}")
             self.is_resetting = False
-            logger.info(f"DEBUG: Reset completed, allowing new joins")
-            
-        except Exception as e:
-            logger.error(f"Error ending game: {e}")
-            self.is_resetting = False  # Ensure flag is cleared on error
-        finally:
-            session.close()
-    
-    def _perform_database_reset(self, room="main", preserve_win_counter=True):
-        """Perform the actual database reset (called from background thread)."""
-        logger.info(f"DEBUG: Performing database reset for room: {room}")
-        session = SessionLocal()
-        try:
-            # Preserve win counter if requested
-            win_counter_data = None
-            if preserve_win_counter:
-                from models.database import get_win_counter
-                try:
-                    win_counter = get_win_counter(session, room)
-                    win_counter_data = {
-                        'human_wins': win_counter.human_wins,
-                        'ai_wins': win_counter.ai_wins
-                    }
-                    logger.info(f"DEBUG: Preserving win counter: {win_counter_data}")
-                except Exception as e:
-                    logger.info(f"DEBUG: Could not preserve win counter: {e}")
-            
-            # Drop and recreate all tables
-            from models.database import Base, engine
-            Base.metadata.drop_all(engine)
-            Base.metadata.create_all(engine)
-            
-            # Restore win counter if preserved
-            if preserve_win_counter and win_counter_data:
-                from models.database import WinCounter
-                new_counter = WinCounter(
-                    room=room,
-                    human_wins=win_counter_data['human_wins'],
-                    ai_wins=win_counter_data['ai_wins']
-                )
-                session.add(new_counter)
-                session.commit()
-                logger.info(f"DEBUG: Win counter restored: {win_counter_data}")
-            
-            # Create fresh lobby
-            lobby = get_lobby(session, room)
-            
-            logger.info(f"DEBUG: Database reset completed successfully!")
-            
-        except Exception as e:
-            logger.error(f"Error in database reset: {e}")
-        finally:
-            session.close()
-    
-    def reset_game(self, room="main"):
-        """Reset the game to initial state (for manual reset)."""
-        logger.info(f"DEBUG: Manual reset requested for room: {room}")
-        try:
-            # Set reset flag to prevent new joins
-            self.is_resetting = True
-            
-            # Emit reset notification immediately
-            logger.info(f"DEBUG: Emitting manual reset notification...")
-            self.socketio.emit('game_reset', {
-                'message': '🎮 Manual reset! Ready for new players to join and start a new game!'
-            }, room=room)
-            
-            # Perform database reset immediately
-            self._perform_database_reset(room, preserve_win_counter=False)
-            
-            # Reset win counter and emit update
-            session = SessionLocal()
-            from models.database import reset_win_counter, get_win_counter
-            reset_win_counter(session, room)
-            win_counter = get_win_counter(session, room)
-            self.socketio.emit('win_counter_update', {
-                'human_wins': win_counter.human_wins,
-                'ai_wins': win_counter.ai_wins
-            }, room=room)
-            session.close()
-            
-            # Clear reset flag after reset completes
-            self.is_resetting = False
-            logger.info(f"DEBUG: Manual reset completed successfully!")
-            
-        except Exception as e:
-            logger.error(f"Error in manual reset: {e}")
-            self.is_resetting = False  # Ensure flag is cleared on error
     
     def update_activity(self):
         """Update the last activity timestamp and reset timer if game is active."""
@@ -690,37 +738,69 @@ class GameManager:
             self.inactivity_timer = None
     
     def reset_inactivity_timer(self, room="main"):
-        """Reset the inactivity timer."""
-        # Stop any existing timer
+        """Reset the inactivity timer with 5-minute timeout and 1-minute warning."""
+        # Stop any existing timers
         self.stop_inactivity_timer()
+        self.stop_warning_timer()
         
         # Only start timer if game is active
         session = SessionLocal()
         try:
             lobby = get_lobby(session, room)
             if lobby.state in ['playing', 'voting']:
-                self.inactivity_timer = threading.Timer(60.0, self.handle_inactivity, args=[room])
+                # Start warning timer (4 minutes = 240 seconds)
+                self.warning_timer = threading.Timer(240.0, self.handle_warning, args=[room])
+                self.warning_timer.daemon = True
+                self.warning_timer.start()
+                
+                # Start inactivity timer (5 minutes = 300 seconds)
+                self.inactivity_timer = threading.Timer(300.0, self.handle_inactivity, args=[room])
                 self.inactivity_timer.daemon = True
                 self.inactivity_timer.start()
+                
+                logger.info(f"DEBUG: Inactivity timers started - warning in 4 minutes, reset in 5 minutes")
         except Exception as e:
             logger.error(f"Error resetting inactivity timer: {e}")
         finally:
             session.close()
     
-    def handle_inactivity(self, room="main"):
-        """Handle inactivity timeout."""
+    def handle_warning(self, room="main"):
+        """Handle inactivity warning (1 minute before reset)."""
         current_time = time.time()
-        if current_time - self.last_activity >= 60:
+        if current_time - self.last_activity >= 240:  # 4 minutes
+            logger.info(f"Inactivity warning for room {room}")
+            self.socketio.emit('game_update', {
+                'log': '⚠️ Warning: Game will reset in 1 minute due to inactivity!',
+                'error': True
+            }, room=room)
+    
+    def handle_inactivity(self, room="main"):
+        """Handle inactivity timeout (5 minutes)."""
+        current_time = time.time()
+        if current_time - self.last_activity >= 300:  # 5 minutes
             logger.info(f"Inactivity timeout for room {room}")
-            self.reset_game(room)
-
+            self.unified_reset(room, "Inactivity timeout", preserve_win_counter=True)
+    
+    def stop_warning_timer(self):
+        """Stop the warning timer."""
+        if self.warning_timer:
+            self.warning_timer.cancel()
+            self.warning_timer = None
+    
     def pause_inactivity_timer(self):
         """Pause the inactivity timer during AI operations."""
         if self.inactivity_timer:
             self.inactivity_timer.cancel()
-            logger.info("Inactivity timer paused during AI operation")
+        if self.warning_timer:
+            self.warning_timer.cancel()
+        logger.info("Inactivity timers paused during AI operation")
 
     def resume_inactivity_timer(self):
         """Resume the inactivity timer after AI operations."""
         self.update_activity()
-        logger.info("Inactivity timer resumed after AI operation") 
+        logger.info("Inactivity timers resumed after AI operation")
+
+    def clear_reset_flag(self):
+        """Clear the reset flag to allow new joins and game starts."""
+        self.is_resetting = False
+        logger.info("DEBUG: Reset flag cleared") 
