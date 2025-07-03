@@ -7,6 +7,7 @@ Contains no business logic - only request/response handling.
 
 import logging
 from flask import jsonify
+from utils.helpers import get_random_available_name
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,31 @@ def register_api_handlers(app, lobby_manager, game_manager):
             'message': 'The Outsider game server is running',
             'version': '3.0.0'
         })
+
+    @app.route('/api/random-name')
+    def get_random_name():
+        """Get a random available name for players."""
+        try:
+            # Use helper function to get random available name
+            random_name = get_random_available_name()
+            
+            if random_name:
+                return jsonify({
+                    'name': random_name,
+                    'message': 'Random name generated successfully'
+                })
+            else:
+                return jsonify({
+                    'error': 'No available names found',
+                    'message': 'All names are currently taken'
+                }), 404
+                
+        except Exception as e:
+            logger.error(f"Error generating random name: {e}")
+            return jsonify({
+                'error': 'Failed to generate random name',
+                'message': 'Please try again or enter a name manually'
+            }), 500
 
     @app.route('/api/stats')
     def get_stats():

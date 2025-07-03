@@ -16,6 +16,103 @@ def generate_lobby_code(length: int = 6) -> str:
     characters = string.ascii_uppercase + string.digits
     return ''.join(random.choices(characters, k=length))
 
+def get_random_available_name(exclude_names: Optional[List[str]] = None, 
+                             lobby_code: Optional[str] = None) -> Optional[str]:
+    """
+    Get a random available name that's not already taken in the specified lobby.
+    
+    This function checks both the predefined AI names list and optionally
+    checks against players already in a specific lobby.
+    
+    Args:
+        exclude_names: List of names to exclude (already taken)
+        lobby_code: Optional lobby code to check for existing players
+        
+    Returns:
+        Random available name or None if all names are taken
+    """
+    try:
+        exclude_names = exclude_names or []
+        
+        # If lobby_code is provided, get existing players from that lobby
+        if lobby_code:
+            try:
+                from cache import get_players_in_lobby
+                existing_players = get_players_in_lobby(lobby_code)
+                lobby_names = [player.username for player in existing_players]
+                exclude_names = exclude_names + lobby_names
+            except ImportError:
+                # Cache not available, continue with provided exclude_names only
+                pass
+            except Exception:
+                # Error getting lobby players, continue with provided exclude_names only
+                pass
+        
+        # Convert to lowercase for case-insensitive comparison
+        exclude_lower = [name.lower() for name in exclude_names]
+        
+        # Filter available names from AI_NAMES
+        available = [
+            name for name in AI_NAMES 
+            if name.lower() not in exclude_lower
+        ]
+        
+        if not available:
+            return None
+        
+        return random.choice(available)
+        
+    except Exception as e:
+        # Fallback to a basic random name if anything goes wrong
+        fallback_names = ["Alex", "Blake", "Casey", "Drew", "Ellis"]
+        exclude_lower = [name.lower() for name in (exclude_names or [])]
+        available_fallback = [name for name in fallback_names if name.lower() not in exclude_lower]
+        return random.choice(available_fallback) if available_fallback else None
+
+def is_name_available(name: str, exclude_names: Optional[List[str]] = None,
+                     lobby_code: Optional[str] = None) -> bool:
+    """
+    Check if a specific name is available for use.
+    
+    Args:
+        name: Name to check
+        exclude_names: List of names to exclude
+        lobby_code: Optional lobby code to check for existing players
+        
+    Returns:
+        True if name is available, False otherwise
+    """
+    try:
+        exclude_names = exclude_names or []
+        
+        # If lobby_code is provided, get existing players from that lobby
+        if lobby_code:
+            try:
+                from cache import get_players_in_lobby
+                existing_players = get_players_in_lobby(lobby_code)
+                lobby_names = [player.username for player in existing_players]
+                exclude_names = exclude_names + lobby_names
+            except ImportError:
+                # Cache not available, continue with provided exclude_names only
+                pass
+            except Exception:
+                # Error getting lobby players, continue with provided exclude_names only
+                pass
+        
+        # Convert to lowercase for case-insensitive comparison
+        exclude_lower = [n.lower() for n in exclude_names]
+        
+        # Check if name is in exclude list
+        if name.lower() in exclude_lower:
+            return False
+        
+        # Name is available if it's not in the exclude list
+        return True
+        
+    except Exception:
+        # If anything goes wrong, assume name is not available for safety
+        return False
+
 def validate_username(username: str) -> tuple[bool, Optional[str]]:
     """
     Validate a username for the game.
@@ -36,7 +133,7 @@ def validate_username(username: str) -> tuple[bool, Optional[str]]:
     if not re.match(r'^[a-zA-Z0-9\s\-_\.]+$', username):
         return False, "Username contains invalid characters"
     
-    # Don't allow usernames that are too similar to AI names
+    # Don't allow usernames that are too similar to AI names (case insensitive)
     username_lower = username.lower()
     for ai_name in AI_NAMES:
         if username_lower == ai_name.lower():
@@ -54,12 +151,7 @@ def get_available_ai_name(existing_names: List[str]) -> Optional[str]:
     Returns:
         An available AI name or None if all are taken
     """
-    existing_lower = [name.lower() for name in existing_names]
-    available_names = [name for name in AI_NAMES if name.lower() not in existing_lower]
-    
-    if available_names:
-        return random.choice(available_names)
-    return None
+    return get_random_available_name(exclude_names=existing_names)
 
 def sanitize_message(message: str) -> str:
     """

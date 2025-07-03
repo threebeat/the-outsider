@@ -16,7 +16,7 @@ from cache import (
     add_player_to_lobby, create_game, get_game_by_lobby,
     PlayerCache, GameCache
 )
-from ai.name_generator import NameGenerator
+from utils.helpers import get_random_available_name
 from utils.constants import LOCATIONS, AI_PERSONALITIES
 
 logger = logging.getLogger(__name__)
@@ -216,8 +216,7 @@ class GameCreator:
         
         # Use name generator to get unique name
         try:
-            name_generator = NameGenerator()
-            name = name_generator.get_random_name(exclude_names=existing_names)
+            name = get_random_available_name(existing_names)
             
             if name:
                 return name
