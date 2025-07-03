@@ -44,8 +44,8 @@ class GameManager:
                 if lobby.state != 'waiting':
                     return False, "Game already in progress", None
                 
-                from database_getters import get_active_players_in_lobby
-                if len(get_active_players_in_lobby(lobby.id)) < 3:
+                from database_getters import get_players_from_lobby
+                if len(get_players_from_lobby(lobby.id, is_spectator=False)) < 3:
                     return False, "Need at least 3 players to start", None
                 
                 # Select random location
@@ -242,7 +242,7 @@ class GameManager:
             tuple: (success, message, result_data)
         """
         try:
-            from database_getters import get_active_players_in_lobby
+            from database_getters import get_players_from_lobby
             # Find lobby and validate
             lobby_code = self._find_player_lobby(voter_sid)
             if not lobby_code:
@@ -260,7 +260,7 @@ class GameManager:
                     if not lobby:
                         return False, "Lobby not found", None
                     
-                    eligible_voters = [p.username for p in get_active_players_in_lobby(lobby.id)]
+                    eligible_voters = [p.username for p in get_players_from_lobby(lobby.id, is_spectator=False)]
                     eligible_targets = eligible_voters
                     
                     game_state['voting_session'] = self.vote_manager.start_voting_session(
@@ -275,7 +275,7 @@ class GameManager:
             # Validate and record vote
             with get_db_session() as session:
                 lobby = session.query(Lobby).filter_by(code=lobby_code).first()
-                eligible_voters = [p.username for p in get_active_players_in_lobby(lobby.id)]
+                eligible_voters = [p.username for p in get_players_from_lobby(lobby.id, is_spectator=False)]
                 eligible_targets = eligible_voters
             
             is_valid, error = self.vote_manager.validate_vote(
@@ -373,9 +373,9 @@ class GameManager:
     
     def _select_outsider_player(self, lobby) -> str:
         """Select the AI outsider player for the game."""
-        from database_getters import get_ai_players_in_lobby
+        from database_getters import get_players_from_lobby
         # For now, select first AI player
-        ai_players = get_ai_players_in_lobby(lobby.id)
+        ai_players = get_players_from_lobby(lobby.id, is_ai=True)
         if ai_players:
             return ai_players[0].username
         # If no AI players, this shouldn't happen

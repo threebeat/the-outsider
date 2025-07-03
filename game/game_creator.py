@@ -10,7 +10,7 @@ import random
 from typing import Optional, List, Any
 
 from database_getters import (
-    get_lobby_by_id, get_players, get_ai_players_in_lobby, get_human_players_in_lobby
+    get_lobby_by_id, get_players, get_players_from_lobby
 )
 from database_setters import create_player, create_game_session
 from ai.name_generator import NameGenerator
@@ -46,7 +46,7 @@ class GameCreator:
                 return False
             
             # Check how many AI players already exist
-            existing_ai = get_ai_players_in_lobby(lobby_id)
+            existing_ai = get_players_from_lobby(lobby_id, is_ai=True)
             existing_ai_count = len(existing_ai)
             
             # Determine how many AI players to add
@@ -119,7 +119,7 @@ class GameCreator:
                 return False
             
             # Check for AI players (who are automatically outsiders)
-            ai_players = get_ai_players_in_lobby(lobby_id)
+            ai_players = get_players_from_lobby(lobby_id, is_ai=True)
             if not ai_players:
                 logger.warning(f"No AI players in lobby {lobby_id} - game not ready")
                 return False
@@ -224,9 +224,9 @@ class GameCreator:
             if not lobby:
                 return {}
             
-            all_players = get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False)
-            ai_players = get_ai_players_in_lobby(lobby_id)
-            human_players = get_human_players_in_lobby(lobby_id)
+            all_players = get_players_from_lobby(lobby_id, is_spectator=False)
+            ai_players = get_players_from_lobby(lobby_id, is_ai=True)
+            human_players = get_players_from_lobby(lobby_id, is_ai=False, is_spectator=False)
             
             return {
                 'lobby_id': lobby_id,

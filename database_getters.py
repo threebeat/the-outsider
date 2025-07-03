@@ -147,25 +147,23 @@ def get_latest_game_session(lobby_id: int) -> Optional[GameSession]:
         return session.query(GameSession).filter_by(lobby_id=lobby_id)\
             .order_by(GameSession.session_number.desc()).first()
 
-def get_player_count_in_lobby(lobby_id: int) -> int:
-    """Get the number of active players in a lobby."""
-    return len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
-
-def get_ai_players_in_lobby(lobby_id: int) -> List[Player]:
-    """Get all AI players (outsiders) in a lobby."""
-    return get_players(lobby_id=lobby_id, is_ai=True, is_connected=True)
-
-def get_human_players_in_lobby(lobby_id: int) -> List[Player]:
-    """Get all human players in a lobby."""
-    return get_players(lobby_id=lobby_id, is_ai=False, is_connected=True, is_spectator=False)
-
-def get_all_players_in_lobby(lobby_id: int) -> List[Player]:
-    """Get all connected players in a lobby (both human and AI)."""
-    return get_players(lobby_id=lobby_id, is_connected=True)
-
-def get_active_players_in_lobby(lobby_id: int) -> List[Player]:
-    """Get all active (non-spectator) players in a lobby."""
-    return get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False)
+def get_players_from_lobby(lobby_id: int, 
+                          is_ai: Optional[bool] = None,
+                          is_connected: Optional[bool] = True,
+                          is_spectator: Optional[bool] = None) -> List[Player]:
+    """
+    Universal function to get players from a specific lobby with filtering.
+    
+    Args:
+        lobby_id: ID of the lobby
+        is_ai: Filter by AI status (True for AI players, False for humans, None for both)
+        is_connected: Filter by connection status
+        is_spectator: Filter by spectator status
+        
+    Returns:
+        List of players matching the criteria
+    """
+    return get_players(lobby_id=lobby_id, is_ai=is_ai, is_connected=is_connected, is_spectator=is_spectator)
 
 def get_lobby_messages(lobby_id: int, limit: int = 50) -> List[GameMessage]:
     """Get recent messages from a lobby."""

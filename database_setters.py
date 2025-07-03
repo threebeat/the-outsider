@@ -81,9 +81,9 @@ def create_game_session(lobby_id: int, location: str) -> GameSession:
         session_number = (last_session.session_number + 1) if last_session else 1
         
         # Count players
-        from database_getters import get_human_players_in_lobby, get_ai_players_in_lobby
-        human_count = len(get_human_players_in_lobby(lobby_id))
-        ai_count = len(get_ai_players_in_lobby(lobby_id))
+        from database_getters import get_players_from_lobby
+        human_count = len(get_players_from_lobby(lobby_id, is_ai=False, is_spectator=False))
+        ai_count = len(get_players_from_lobby(lobby_id, is_ai=True))
         
         game_session = GameSession(
             lobby_id=lobby_id,
