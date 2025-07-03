@@ -371,6 +371,51 @@ def init_database():
         logger.error(f"Failed to initialize database: {e}")
         raise
 
+def clean_database():
+    """
+    Clean all transient game data while preserving statistics.
+    
+    Removes:
+    - All lobbies and their cascading data (players, votes, messages, sessions)
+    - Does NOT remove GameStatistics (preserves human vs AI score)
+    """
+    try:
+        with get_db_session() as session:
+            # Count items before cleanup for logging
+            lobby_count = session.query(Lobby).count()
+            player_count = session.query(Player).count()
+            message_count = session.query(GameMessage).count()
+            vote_count = session.query(Vote).count()
+            session_count = session.query(GameSession).count()
+            
+            # Delete all lobbies (cascades to players, messages, votes, sessions)
+            session.query(Lobby).delete()
+            
+            # Log what was cleaned
+            logger.info(f"Database cleanup complete:")
+            logger.info(f"  - Removed {lobby_count} lobbies")
+            logger.info(f"  - Removed {player_count} players")
+            logger.info(f"  - Removed {message_count} messages")
+            logger.info(f"  - Removed {vote_count} votes")
+            logger.info(f"  - Removed {session_count} game sessions")
+            
+            # Verify statistics are preserved
+            stats = session.query(GameStatistics).filter_by(lobby_code='main').first()
+            if stats:
+                logger.info(f"Preserved game statistics: Humans {stats.human_wins} - {stats.ai_wins} AI")
+            
+            return {
+                'lobbies_removed': lobby_count,
+                'players_removed': player_count,
+                'messages_removed': message_count,
+                'votes_removed': vote_count,
+                'sessions_removed': session_count
+            }
+            
+    except Exception as e:
+        logger.error(f"Failed to clean database: {e}")
+        raise
+
 def create_lobby(session, code: str, name: str, max_players: int = 8) -> Lobby:
     """Create a new lobby."""
     lobby = Lobby(

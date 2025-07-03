@@ -7,8 +7,10 @@ Game operations happen within lobbies but are separate from lobby management.
 
 from .models import GameData, TurnData, VoteData, GameResult
 from .turn_manager import TurnManager, TurnInfo
-from .question_manager import QuestionManager, QuestionData, AnswerData
+from .question_manager import QuestionManager, QuestionData
+from .answer_manager import AnswerManager, AnswerData
 from .vote_manager import VoteManager, VotingSession, VoteResults
+from .manager import GameManager
 
 __all__ = [
     # Data models
@@ -23,7 +25,9 @@ __all__ = [
     'VoteResults',
     
     # Managers
+    'GameManager',
     'TurnManager',
     'QuestionManager',
+    'AnswerManager',
     'VoteManager'
 ]

@@ -34,12 +34,19 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
         
         try:
             # Delegate to lobby manager for player disconnection
-            success, message, lobby_code = lobby_manager.handle_player_disconnect(request.sid)
+            success, message, lobby_code = lobby_manager.disconnect_player(request.sid)
             
             if success and lobby_code:
                 # Get updated lobby data
-                lobby_data = lobby_manager.get_lobby_data(lobby_code)
-                if lobby_data:
+                lobby = lobby_manager.get_lobby(lobby_code)
+                if lobby:
+                    # Convert to dictionary format
+                    lobby_data = {
+                        'code': lobby.code,
+                        'name': lobby.name,
+                        'players': [{'username': p.username, 'is_ai': p.is_ai} for p in lobby.players],
+                        'max_players': lobby.max_players
+                    }
                     # Notify other players in the lobby
                     socketio.emit('player_disconnected', {
                         'message': message,
@@ -58,19 +65,26 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
             creator_sid = request.sid
             
             # Delegate to lobby manager
-            success, message, lobby_data = lobby_manager.create_lobby(
-                lobby_name=lobby_name,
-                creator_sid=creator_sid,
+            success, message, lobby = lobby_manager.create_lobby(
+                name=lobby_name,
                 custom_code=lobby_code
             )
             
-            if success:
+            if success and lobby:
+                # Convert to dictionary format
+                lobby_data = {
+                    'code': lobby.code,
+                    'name': lobby.name,
+                    'players': [],
+                    'max_players': lobby.max_players
+                }
+                
                 emit('lobby_created', {
                     'success': True,
                     'lobby': lobby_data,
                     'message': message
                 })
-                logger.info(f"Created lobby: {lobby_data['code']}")
+                logger.info(f"Created lobby: {lobby.code}")
             else:
                 emit('error', {'message': message})
                 
@@ -91,9 +105,9 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
                 return
             
             # Delegate to lobby manager
-            success, message, player_data = lobby_manager.add_player_to_lobby(
+            success, message, player_data = lobby_manager.join_lobby(
                 lobby_code=lobby_code,
-                player_sid=player_sid,
+                session_id=player_sid,
                 username=username
             )
             
@@ -102,7 +116,15 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
                 join_room(lobby_code)
                 
                 # Get updated lobby data
-                lobby_data = lobby_manager.get_lobby_data(lobby_code)
+                lobby = lobby_manager.get_lobby(lobby_code)
+                
+                # Convert to dictionary format
+                lobby_data = {
+                    'code': lobby.code,
+                    'name': lobby.name,
+                    'players': [{'username': p.username, 'is_ai': p.is_ai} for p in lobby.players],
+                    'max_players': lobby.max_players
+                }
                 
                 # Send success response to player
                 emit('joined_lobby', {
@@ -134,14 +156,14 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
             player_sid = request.sid
             
             # Delegate to lobby manager
-            success, message, lobby_code = lobby_manager.remove_player_from_lobby(player_sid)
+            success, message, lobby_code = lobby_manager.leave_lobby(player_sid)
             
             if success and lobby_code:
                 # Leave the socket room
                 leave_room(lobby_code)
                 
                 # Get updated lobby data
-                lobby_data = lobby_manager.get_lobby_data(lobby_code)
+                lobby = lobby_manager.get_lobby(lobby_code)
                 
                 # Send success response
                 emit('left_lobby', {
@@ -150,7 +172,13 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
                 })
                 
                 # Notify other players
-                if lobby_data:
+                if lobby:
+                    lobby_data = {
+                        'code': lobby.code,
+                        'name': lobby.name,
+                        'players': [{'username': p.username, 'is_ai': p.is_ai} for p in lobby.players],
+                        'max_players': lobby.max_players
+                    }
                     emit('player_left', {
                         'lobby': lobby_data,
                         'message': message
@@ -177,15 +205,23 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
             
             if success:
                 # Get updated lobby data
-                lobby_data = lobby_manager.get_lobby_data(lobby_code)
+                lobby = lobby_manager.get_lobby(lobby_code)
                 
-                # Notify all players that game started
-                socketio.emit('game_started', {
-                    'success': True,
-                    'game_data': game_data,
-                    'lobby': lobby_data,
-                    'message': message
-                }, room=lobby_code)
+                if lobby:
+                    lobby_data = {
+                        'code': lobby.code,
+                        'name': lobby.name,
+                        'players': [{'username': p.username, 'is_ai': p.is_ai} for p in lobby.players],
+                        'max_players': lobby.max_players
+                    }
+                    
+                    # Notify all players that game started
+                    socketio.emit('game_started', {
+                        'success': True,
+                        'game_data': game_data,
+                        'lobby': lobby_data,
+                        'message': message
+                    }, room=lobby_code)
                 
                 logger.info(f"Started game in lobby {lobby_code}")
             else:
@@ -326,9 +362,17 @@ def register_socket_handlers(socketio, lobby_manager, game_manager):
                 return
             
             # Delegate to lobby manager
-            lobby_data = lobby_manager.get_lobby_data(lobby_code)
+            lobby = lobby_manager.get_lobby(lobby_code)
             
-            if lobby_data:
+            if lobby:
+                # Convert to dictionary format for client
+                lobby_data = {
+                    'code': lobby.code,
+                    'name': lobby.name,
+                    'players': [{'username': p.username, 'is_ai': p.is_ai} for p in lobby.players],
+                    'max_players': lobby.max_players,
+                    'created_at': lobby.created_at.isoformat()
+                }
                 emit('lobby_data', {'lobby': lobby_data})
             else:
                 emit('error', {'message': 'Lobby not found'})

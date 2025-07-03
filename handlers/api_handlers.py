@@ -56,7 +56,7 @@ def register_api_handlers(app, lobby_manager, game_manager):
         """Get list of active lobbies."""
         try:
             # Delegate to lobby manager
-            lobbies = lobby_manager.get_active_lobbies_list()
+            lobbies = lobby_manager.get_active_lobbies()
             return jsonify({'lobbies': lobbies})
             
         except Exception as e:
