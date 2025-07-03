@@ -47,7 +47,8 @@ from .getters import (
     get_lobby_by_player_session,
     is_username_taken,
     is_lobby_code_taken,
-    get_lobby_capacity_info
+    can_join_lobby,
+    get_lobby_player_count
 )
 
 # Import setter functions
@@ -113,7 +114,8 @@ __all__ = [
     "get_lobby_by_player_session",
     "is_username_taken",
     "is_lobby_code_taken",
-    "get_lobby_capacity_info",
+    "can_join_lobby",
+    "get_lobby_player_count",
     
     # Setters
     "create_lobby",

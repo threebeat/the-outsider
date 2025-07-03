@@ -43,7 +43,7 @@ MESSAGE_TYPES = {
 GAME_CONFIG = {
     'MAX_QUESTIONS': 5,
     'MIN_PLAYERS': 1,
-    'MAX_PLAYERS': 8,
+    'MAX_PLAYERS': 12,  # Total players including 1-3 AI players
     'DEFAULT_AI_DIFFICULTY': 'normal',
     'LOBBY_CLEANUP_HOURS': 24,
     'GAME_RESET_DELAY': 10  # seconds

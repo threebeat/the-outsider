@@ -229,18 +229,12 @@ def is_lobby_code_taken(code: str) -> bool:
     with get_db_session() as session:
         return session.query(Lobby).filter_by(code=code).first() is not None
 
-def get_lobby_capacity_info(lobby_id: int) -> dict:
-    """Get capacity information for a lobby."""
-    with get_db_session() as session:
-        lobby = session.query(Lobby).filter_by(id=lobby_id).first()
-        if not lobby:
-            return {}
-        
-        player_count = len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
-        
-        return {
-            'current_players': player_count,
-            'max_players': lobby.max_players,
-            'can_join': player_count < lobby.max_players,
-            'slots_available': lobby.max_players - player_count
-        }
+def can_join_lobby(lobby_id: int) -> bool:
+    """Check if a lobby has space for another player."""
+    from utils.constants import GAME_CONFIG
+    current_players = len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
+    return current_players < GAME_CONFIG['MAX_PLAYERS']
+
+def get_lobby_player_count(lobby_id: int) -> int:
+    """Get current player count for a lobby (excluding spectators)."""
+    return len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
