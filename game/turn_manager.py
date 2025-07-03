@@ -274,17 +274,9 @@ class TurnManager:
             self.game_state.questions_this_round += 1
             self.game_state.total_questions += 1
             
-            # Save to database
-            with get_db_session() as session:
-                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
-                if lobby:
-                    lobby.question_count = self.game_state.total_questions
-                    self._save_turn_state_to_db(session, lobby)
-                    logger.info(f"Added question from {asker} to {target}")
-                    return True
-                else:
-                    logger.error(f"Lobby {self.lobby_code} not found")
-                    return False
+            # Turn state managed in game system, not database
+            logger.info(f"Added question from {asker} to {target}")
+            return True
                     
         except Exception as e:
             logger.error(f"Error adding question to turn: {e}")
@@ -308,16 +300,9 @@ class TurnManager:
             # Update current turn with answer
             self.game_state.current_turn_info.answer = answer
             
-            # Save to database
-            with get_db_session() as session:
-                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
-                if lobby:
-                    self._save_turn_state_to_db(session, lobby)
-                    logger.info(f"Added answer to current turn")
-                    return True
-                else:
-                    logger.error(f"Lobby {self.lobby_code} not found")
-                    return False
+            # Turn state managed in game system, not database
+            logger.info(f"Added answer to current turn")
+            return True
                     
         except Exception as e:
             logger.error(f"Error adding answer to turn: {e}")
@@ -366,7 +351,7 @@ class TurnManager:
     
     def _save_turn_state_to_db(self, session, lobby: Lobby):
         """
-        Save current turn state and game details to the database.
+        Save minimal lobby activity to database (turn state managed in game system).
         
         Args:
             session: Database session
@@ -376,11 +361,7 @@ class TurnManager:
             if not self.game_state:
                 return
             
-            current_turn = self.game_state.current_turn_info
-            
-            # Update lobby with current turn information
-            lobby.current_turn = current_turn.turn_number
-            lobby.question_count = self.game_state.total_questions
+            # Only update lobby activity timestamp
             lobby.last_activity = datetime.now()
             
             # Update or create game session if needed
@@ -395,10 +376,10 @@ class TurnManager:
                     self.game_state.game_session_id = active_session.id
                     logger.debug(f"Found active game session: {active_session.id}")
             
-            logger.debug(f"Saved turn state to database: turn {current_turn.turn_number}, player {current_turn.current_player}")
+            logger.debug(f"Updated lobby activity (turn state managed in game system)")
             
         except Exception as e:
-            logger.error(f"Error saving turn state to database: {e}")
+            logger.error(f"Error updating lobby activity: {e}")
     
     def get_current_player(self) -> Optional[str]:
         """Get the current player whose turn it is."""

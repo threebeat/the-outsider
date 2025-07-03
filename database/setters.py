@@ -110,8 +110,6 @@ def create_game_session(lobby_id: int, location: str) -> GameSession:
         lobby.state = 'active'
         lobby.location = location
         lobby.started_at = datetime.now(timezone.utc)
-        lobby.current_turn = 0
-        lobby.question_count = 0
         lobby.update_activity()
         
         logger.info(f"Created game session {session_number} in lobby '{lobby.code}' with location '{location}'")
@@ -267,8 +265,6 @@ def reset_lobby_for_new_game(lobby_id: int):
         if lobby:
             lobby.state = 'open'
             lobby.location = None
-            lobby.current_turn = 0
-            lobby.question_count = 0
             lobby.started_at = None
             lobby.ended_at = None
             lobby.update_activity()

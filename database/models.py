@@ -25,11 +25,6 @@ class Lobby(Base):
     state = Column(String(20), default='open')  # open, active (destroyed after game ends)
     location = Column(String(100), nullable=True)  # Current game location
     
-    # Turn management
-    current_turn = Column(Integer, default=0)
-    question_count = Column(Integer, default=0)
-    max_questions = Column(Integer, default=5)
-    
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     started_at = Column(DateTime(timezone=True), nullable=True)
