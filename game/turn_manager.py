@@ -1,24 +1,27 @@
 """
-Turn Manager for The Outsider Game.
+Enhanced Turn Manager for The Outsider Game.
 
-Handles turn order, turn progression, and starting player selection.
-Contains no lobby logic - purely turn-based game flow management.
+Handles turn order, turn progression, and starting player selection with database integration.
+Automatically initializes when created, saves game state, and provides dynamic turn advancement.
 """
 
 import random
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+from database import get_db_session, Lobby, Player, GameSession
 
 logger = logging.getLogger(__name__)
 
 @dataclass
 class TurnInfo:
-    """Information about the current turn."""
+    """Enhanced information about the current turn."""
     current_player: str
     next_player: str
     turn_number: int
+    round_number: int = 1
     question_asker: Optional[str] = None
     question_target: Optional[str] = None
     question: Optional[str] = None
@@ -26,25 +29,103 @@ class TurnInfo:
     turn_start_time: Optional[datetime] = None
     turn_timeout: Optional[datetime] = None
 
+@dataclass
+class GameState:
+    """Enhanced game state with database backing."""
+    lobby_code: str
+    turn_order: List[str]
+    current_turn_info: TurnInfo
+    game_session_id: Optional[int] = None
+    questions_this_round: int = 0
+    max_questions_per_round: int = 5
+    total_questions: int = 0
+
 class TurnManager:
     """
-    Manages turn order and turn progression in games.
+    Enhanced turn manager with automatic initialization and database integration.
     
-    Handles starting player selection, turn rotation, and turn timing.
-    Contains no lobby or game state logic - pure turn management.
+    Features:
+    - Automatically chooses starting player when initialized
+    - Automatically creates turn order right after
+    - Saves current player and game details in database
+    - Provides advance_turn method that updates database dynamically
     """
     
-    def __init__(self, turn_timeout_seconds: int = 60):
+    def __init__(self, lobby_code: str, turn_timeout_seconds: int = 60, 
+                 max_questions_per_round: int = 5):
         """
-        Initialize turn manager.
+        Initialize turn manager with automatic setup.
         
         Args:
+            lobby_code: Code of the lobby this turn manager handles
             turn_timeout_seconds: Maximum time per turn in seconds
+            max_questions_per_round: Maximum questions per round before voting
         """
+        self.lobby_code = lobby_code
         self.turn_timeout_seconds = turn_timeout_seconds
-        logger.debug("Turn manager initialized")
+        self.max_questions_per_round = max_questions_per_round
+        self.game_state: Optional[GameState] = None
+        
+        # Automatically initialize the game
+        self._auto_initialize()
+        
+        logger.info(f"Turn manager initialized for lobby {lobby_code}")
     
-    def choose_starting_player(self, player_list: List[str]) -> Optional[str]:
+    def _auto_initialize(self):
+        """
+        Automatically initialize the turn manager by:
+        1. Getting player list from lobby
+        2. Choosing starting player
+        3. Creating turn order
+        4. Saving initial state to database
+        """
+        try:
+            with get_db_session() as session:
+                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
+                if not lobby:
+                    raise ValueError(f"Lobby {self.lobby_code} not found")
+                
+                # Get active players
+                active_players = [p.username for p in lobby.active_players]
+                if len(active_players) < 2:
+                    raise ValueError("Need at least 2 players to start game")
+                
+                # Choose starting player automatically
+                starting_player = self._choose_starting_player(active_players)
+                logger.info(f"Auto-selected starting player: {starting_player}")
+                
+                # Create turn order automatically
+                turn_order = self._create_turn_order(active_players, starting_player)
+                logger.info(f"Auto-created turn order: {turn_order}")
+                
+                # Create initial turn info
+                initial_turn = TurnInfo(
+                    current_player=starting_player,
+                    next_player=self._get_next_player(starting_player, turn_order),
+                    turn_number=1,
+                    round_number=1,
+                    turn_start_time=datetime.now(),
+                    turn_timeout=datetime.now() + timedelta(seconds=self.turn_timeout_seconds)
+                )
+                
+                # Initialize game state
+                self.game_state = GameState(
+                    lobby_code=self.lobby_code,
+                    turn_order=turn_order,
+                    current_turn_info=initial_turn,
+                    max_questions_per_round=self.max_questions_per_round
+                )
+                
+                # Save initial state to database
+                self._save_turn_state_to_db(session, lobby)
+                
+                logger.info(f"Auto-initialization complete for lobby {self.lobby_code}")
+                
+        except Exception as e:
+            logger.error(f"Failed to auto-initialize turn manager: {e}")
+            raise
+    
+    def _choose_starting_player(self, player_list: List[str]) -> str:
         """
         Choose a random starting player from the list of players.
         
@@ -52,65 +133,40 @@ class TurnManager:
             player_list: List of player usernames
             
         Returns:
-            Username of chosen starting player, or None if no players
+            Username of chosen starting player
         """
-        try:
-            if not player_list:
-                logger.warning("Cannot choose starting player - no players provided")
-                return None
-            
-            starting_player = random.choice(player_list)
-            logger.info(f"Chose starting player: {starting_player} from {len(player_list)} players")
-            return starting_player
-            
-        except Exception as e:
-            logger.error(f"Error choosing starting player: {e}")
-            return None
+        if not player_list:
+            raise ValueError("Cannot choose starting player - no players provided")
+        
+        starting_player = random.choice(player_list)
+        logger.debug(f"Chose starting player: {starting_player} from {len(player_list)} players")
+        return starting_player
     
-    def create_turn_order(self, player_list: List[str], starting_player: Optional[str] = None) -> List[str]:
+    def _create_turn_order(self, player_list: List[str], starting_player: str) -> List[str]:
         """
-        Create turn order starting from a specific player or random player.
+        Create turn order starting from a specific player.
         
         Args:
             player_list: List of all players
-            starting_player: Player to start with (chosen randomly if None)
+            starting_player: Player to start with
             
         Returns:
             Ordered list of players for turn rotation
         """
-        try:
-            if not player_list:
-                logger.warning("Cannot create turn order - no players provided")
-                return []
-            
-            # Choose starting player if not provided
-            if starting_player is None:
-                starting_player = self.choose_starting_player(player_list)
-                if starting_player is None:
-                    return []
-            
-            # Validate starting player is in the list
-            if starting_player not in player_list:
-                logger.warning(f"Starting player {starting_player} not in player list, choosing random")
-                starting_player = self.choose_starting_player(player_list)
-                if starting_player is None:
-                    return []
-            
-            # Create turn order starting from the chosen player
-            players = player_list.copy()
-            start_index = players.index(starting_player)
-            
-            # Rotate list so starting player is first
-            turn_order = players[start_index:] + players[:start_index]
-            
-            logger.info(f"Created turn order: {turn_order}")
-            return turn_order
-            
-        except Exception as e:
-            logger.error(f"Error creating turn order: {e}")
-            return []
+        if starting_player not in player_list:
+            raise ValueError(f"Starting player {starting_player} not in player list")
+        
+        # Create turn order starting from the chosen player
+        players = player_list.copy()
+        start_index = players.index(starting_player)
+        
+        # Rotate list so starting player is first
+        turn_order = players[start_index:] + players[:start_index]
+        
+        logger.debug(f"Created turn order: {turn_order}")
+        return turn_order
     
-    def get_next_player(self, current_player: str, turn_order: List[str]) -> Optional[str]:
+    def _get_next_player(self, current_player: str, turn_order: List[str]) -> str:
         """
         Get the next player in turn order.
         
@@ -119,176 +175,181 @@ class TurnManager:
             turn_order: Ordered list of players
             
         Returns:
-            Next player's username, or None if error
+            Next player's username
         """
-        try:
-            if not turn_order or current_player not in turn_order:
-                logger.warning(f"Cannot get next player - invalid turn order or player {current_player}")
-                return None
-            
-            current_index = turn_order.index(current_player)
-            next_index = (current_index + 1) % len(turn_order)
-            next_player = turn_order[next_index]
-            
-            logger.debug(f"Next player after {current_player}: {next_player}")
-            return next_player
-            
-        except Exception as e:
-            logger.error(f"Error getting next player: {e}")
-            return None
+        if current_player not in turn_order:
+            raise ValueError(f"Player {current_player} not in turn order")
+        
+        current_index = turn_order.index(current_player)
+        next_index = (current_index + 1) % len(turn_order)
+        next_player = turn_order[next_index]
+        
+        logger.debug(f"Next player after {current_player}: {next_player}")
+        return next_player
     
-    def get_previous_player(self, current_player: str, turn_order: List[str]) -> Optional[str]:
+    def advance_turn(self, next_player_name: str) -> bool:
         """
-        Get the previous player in turn order.
+        Advance to the next turn with the given player and update database.
         
         Args:
-            current_player: Current player's username
-            turn_order: Ordered list of players
+            next_player_name: Username of the next player to take their turn
             
         Returns:
-            Previous player's username, or None if error
+            True if advance was successful, False otherwise
         """
         try:
-            if not turn_order or current_player not in turn_order:
-                logger.warning(f"Cannot get previous player - invalid turn order or player {current_player}")
-                return None
-            
-            current_index = turn_order.index(current_player)
-            previous_index = (current_index - 1) % len(turn_order)
-            previous_player = turn_order[previous_index]
-            
-            logger.debug(f"Previous player before {current_player}: {previous_player}")
-            return previous_player
-            
-        except Exception as e:
-            logger.error(f"Error getting previous player: {e}")
-            return None
-    
-    def create_turn_info(self, 
-                        current_player: str, 
-                        turn_order: List[str], 
-                        turn_number: int = 1) -> Optional[TurnInfo]:
-        """
-        Create turn information for the current turn.
-        
-        Args:
-            current_player: Current player's username
-            turn_order: Ordered list of players
-            turn_number: Current turn number
-            
-        Returns:
-            TurnInfo object or None if error
-        """
-        try:
-            next_player = self.get_next_player(current_player, turn_order)
-            if next_player is None:
-                return None
-            
-            turn_start = datetime.now()
-            turn_timeout = turn_start + timedelta(seconds=self.turn_timeout_seconds)
-            
-            turn_info = TurnInfo(
-                current_player=current_player,
-                next_player=next_player,
-                turn_number=turn_number,
-                turn_start_time=turn_start,
-                turn_timeout=turn_timeout
-            )
-            
-            logger.debug(f"Created turn info for player {current_player}, turn {turn_number}")
-            return turn_info
-            
-        except Exception as e:
-            logger.error(f"Error creating turn info: {e}")
-            return None
-    
-    def advance_turn(self, current_turn_info: TurnInfo, turn_order: List[str]) -> Optional[TurnInfo]:
-        """
-        Advance to the next turn.
-        
-        Args:
-            current_turn_info: Current turn information
-            turn_order: Ordered list of players
-            
-        Returns:
-            New TurnInfo for next turn, or None if error
-        """
-        try:
-            next_player = current_turn_info.next_player
-            new_turn_number = current_turn_info.turn_number + 1
-            
-            new_turn_info = self.create_turn_info(
-                current_player=next_player,
-                turn_order=turn_order,
-                turn_number=new_turn_number
-            )
-            
-            if new_turn_info:
-                logger.info(f"Advanced to turn {new_turn_number}, player {next_player}")
-            
-            return new_turn_info
-            
-        except Exception as e:
-            logger.error(f"Error advancing turn: {e}")
-            return None
-    
-    def is_turn_expired(self, turn_info: TurnInfo) -> bool:
-        """
-        Check if the current turn has expired.
-        
-        Args:
-            turn_info: Current turn information
-            
-        Returns:
-            True if turn has expired, False otherwise
-        """
-        try:
-            if not turn_info.turn_timeout:
+            if not self.game_state:
+                logger.error("Cannot advance turn - game state not initialized")
                 return False
             
-            return datetime.now() > turn_info.turn_timeout
+            # Validate that the next player is in our turn order
+            if next_player_name not in self.game_state.turn_order:
+                logger.error(f"Player {next_player_name} not in turn order")
+                return False
             
+            # Update turn info
+            current_turn = self.game_state.current_turn_info
+            new_turn_number = current_turn.turn_number + 1
+            new_round_number = current_turn.round_number
+            
+            # Check if we should advance to next round (after voting)
+            if self.game_state.questions_this_round >= self.max_questions_per_round:
+                new_round_number += 1
+                self.game_state.questions_this_round = 0
+                logger.info(f"Advancing to round {new_round_number}")
+            
+            # Create new turn info
+            new_turn_info = TurnInfo(
+                current_player=next_player_name,
+                next_player=self._get_next_player(next_player_name, self.game_state.turn_order),
+                turn_number=new_turn_number,
+                round_number=new_round_number,
+                turn_start_time=datetime.now(),
+                turn_timeout=datetime.now() + timedelta(seconds=self.turn_timeout_seconds)
+            )
+            
+            # Update game state
+            self.game_state.current_turn_info = new_turn_info
+            
+            # Save to database
+            with get_db_session() as session:
+                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
+                if lobby:
+                    self._save_turn_state_to_db(session, lobby)
+                    logger.info(f"Advanced to turn {new_turn_number}, player {next_player_name}")
+                    return True
+                else:
+                    logger.error(f"Lobby {self.lobby_code} not found")
+                    return False
+                    
         except Exception as e:
-            logger.error(f"Error checking turn expiration: {e}")
+            logger.error(f"Error advancing turn: {e}")
             return False
     
-    def get_turn_time_remaining(self, turn_info: TurnInfo) -> Optional[int]:
+    def add_question_to_current_turn(self, asker: str, target: str, question: str) -> bool:
         """
-        Get remaining time in seconds for the current turn.
+        Add a question to the current turn and update database.
         
         Args:
-            turn_info: Current turn information
+            asker: Player asking the question
+            target: Player being asked
+            question: The question text
             
         Returns:
-            Remaining seconds, or None if no timeout set
+            True if successful, False otherwise
         """
         try:
-            if not turn_info.turn_timeout:
-                return None
+            if not self.game_state:
+                logger.error("Cannot add question - game state not initialized")
+                return False
             
-            remaining = turn_info.turn_timeout - datetime.now()
-            remaining_seconds = max(0, int(remaining.total_seconds()))
+            # Update current turn with question
+            current_turn = self.game_state.current_turn_info
+            current_turn.question_asker = asker
+            current_turn.question_target = target
+            current_turn.question = question
             
-            return remaining_seconds
+            # Increment question counters
+            self.game_state.questions_this_round += 1
+            self.game_state.total_questions += 1
             
+            # Save to database
+            with get_db_session() as session:
+                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
+                if lobby:
+                    lobby.question_count = self.game_state.total_questions
+                    self._save_turn_state_to_db(session, lobby)
+                    logger.info(f"Added question from {asker} to {target}")
+                    return True
+                else:
+                    logger.error(f"Lobby {self.lobby_code} not found")
+                    return False
+                    
         except Exception as e:
-            logger.error(f"Error getting turn time remaining: {e}")
-            return None
+            logger.error(f"Error adding question to turn: {e}")
+            return False
     
-    def get_random_target_for_player(self, asker: str, available_players: List[str]) -> Optional[str]:
+    def add_answer_to_current_turn(self, answer: str) -> bool:
+        """
+        Add an answer to the current turn and update database.
+        
+        Args:
+            answer: The answer text
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self.game_state:
+                logger.error("Cannot add answer - game state not initialized")
+                return False
+            
+            # Update current turn with answer
+            self.game_state.current_turn_info.answer = answer
+            
+            # Save to database
+            with get_db_session() as session:
+                lobby = session.query(Lobby).filter_by(code=self.lobby_code).first()
+                if lobby:
+                    self._save_turn_state_to_db(session, lobby)
+                    logger.info(f"Added answer to current turn")
+                    return True
+                else:
+                    logger.error(f"Lobby {self.lobby_code} not found")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error adding answer to turn: {e}")
+            return False
+    
+    def should_advance_to_voting(self) -> bool:
+        """
+        Check if the game should advance to voting phase.
+        
+        Returns:
+            True if should advance to voting, False if continue questions
+        """
+        if not self.game_state:
+            return False
+        
+        return self.game_state.questions_this_round >= self.max_questions_per_round
+    
+    def get_random_target_for_player(self, asker: str) -> Optional[str]:
         """
         Get a random target player for asking questions (excluding the asker).
         
         Args:
             asker: Player who is asking the question
-            available_players: List of all available players
             
         Returns:
             Random target player username, or None if no valid targets
         """
         try:
+            if not self.game_state:
+                return None
+            
             # Remove the asker from potential targets
-            valid_targets = [player for player in available_players if player != asker]
+            valid_targets = [player for player in self.game_state.turn_order if player != asker]
             
             if not valid_targets:
                 logger.warning(f"No valid targets for player {asker}")
@@ -302,100 +363,160 @@ class TurnManager:
             logger.error(f"Error choosing random target: {e}")
             return None
     
-    def update_turn_with_question(self, 
-                                 turn_info: TurnInfo, 
-                                 asker: str, 
-                                 target: str, 
-                                 question: str) -> TurnInfo:
+    def _save_turn_state_to_db(self, session, lobby: Lobby):
         """
-        Update turn info with question details.
+        Save current turn state and game details to the database.
         
         Args:
-            turn_info: Current turn information
-            asker: Player asking the question
-            target: Player being asked
-            question: The question text
-            
-        Returns:
-            Updated TurnInfo
+            session: Database session
+            lobby: Lobby object to update
         """
         try:
-            turn_info.question_asker = asker
-            turn_info.question_target = target
-            turn_info.question = question
+            if not self.game_state:
+                return
             
-            logger.debug(f"Updated turn with question from {asker} to {target}")
-            return turn_info
+            current_turn = self.game_state.current_turn_info
+            
+            # Update lobby with current turn information
+            lobby.current_turn = current_turn.turn_number
+            lobby.question_count = self.game_state.total_questions
+            lobby.last_activity = datetime.now()
+            
+            # Update or create game session if needed
+            if not self.game_state.game_session_id:
+                # Check if there's an active game session
+                active_session = session.query(GameSession).filter_by(
+                    lobby_id=lobby.id,
+                    ended_at=None
+                ).first()
+                
+                if active_session:
+                    self.game_state.game_session_id = active_session.id
+                    logger.debug(f"Found active game session: {active_session.id}")
+            
+            logger.debug(f"Saved turn state to database: turn {current_turn.turn_number}, player {current_turn.current_player}")
             
         except Exception as e:
-            logger.error(f"Error updating turn with question: {e}")
-            return turn_info
+            logger.error(f"Error saving turn state to database: {e}")
     
-    def update_turn_with_answer(self, turn_info: TurnInfo, answer: str) -> TurnInfo:
-        """
-        Update turn info with answer.
-        
-        Args:
-            turn_info: Current turn information
-            answer: The answer text
-            
-        Returns:
-            Updated TurnInfo
-        """
-        try:
-            turn_info.answer = answer
-            
-            logger.debug(f"Updated turn with answer: {answer[:50]}...")
-            return turn_info
-            
-        except Exception as e:
-            logger.error(f"Error updating turn with answer: {e}")
-            return turn_info
+    def get_current_player(self) -> Optional[str]:
+        """Get the current player whose turn it is."""
+        if not self.game_state:
+            return None
+        return self.game_state.current_turn_info.current_player
     
-    def validate_turn_order(self, turn_order: List[str], expected_players: List[str]) -> bool:
-        """
-        Validate that turn order contains all expected players.
-        
-        Args:
-            turn_order: Current turn order
-            expected_players: List of players that should be in turn order
-            
-        Returns:
-            True if turn order is valid, False otherwise
-        """
+    def get_next_player(self) -> Optional[str]:
+        """Get the next player in turn order."""
+        if not self.game_state:
+            return None
+        return self.game_state.current_turn_info.next_player
+    
+    def get_turn_number(self) -> int:
+        """Get the current turn number."""
+        if not self.game_state:
+            return 0
+        return self.game_state.current_turn_info.turn_number
+    
+    def get_round_number(self) -> int:
+        """Get the current round number."""
+        if not self.game_state:
+            return 0
+        return self.game_state.current_turn_info.round_number
+    
+    def get_questions_this_round(self) -> int:
+        """Get the number of questions asked this round."""
+        if not self.game_state:
+            return 0
+        return self.game_state.questions_this_round
+    
+    def get_total_questions(self) -> int:
+        """Get the total number of questions asked in the game."""
+        if not self.game_state:
+            return 0
+        return self.game_state.total_questions
+    
+    def get_turn_order(self) -> List[str]:
+        """Get the current turn order."""
+        if not self.game_state:
+            return []
+        return self.game_state.turn_order.copy()
+    
+    def is_turn_expired(self) -> bool:
+        """Check if the current turn has expired."""
         try:
-            # Check that all expected players are in turn order
-            for player in expected_players:
-                if player not in turn_order:
-                    logger.warning(f"Player {player} missing from turn order")
-                    return False
-            
-            # Check that turn order doesn't have extra players
-            for player in turn_order:
-                if player not in expected_players:
-                    logger.warning(f"Unexpected player {player} in turn order")
-                    return False
-            
-            # Check for duplicates
-            if len(set(turn_order)) != len(turn_order):
-                logger.warning("Turn order contains duplicate players")
+            if not self.game_state or not self.game_state.current_turn_info.turn_timeout:
                 return False
             
-            logger.debug("Turn order validation passed")
-            return True
+            return datetime.now() > self.game_state.current_turn_info.turn_timeout
             
         except Exception as e:
-            logger.error(f"Error validating turn order: {e}")
+            logger.error(f"Error checking turn expiration: {e}")
             return False
     
-    def get_status(self) -> dict:
+    def get_turn_time_remaining(self) -> Optional[int]:
+        """Get remaining time in seconds for the current turn."""
+        try:
+            if not self.game_state or not self.game_state.current_turn_info.turn_timeout:
+                return None
+            
+            remaining = self.game_state.current_turn_info.turn_timeout - datetime.now()
+            remaining_seconds = max(0, int(remaining.total_seconds()))
+            
+            return remaining_seconds
+            
+        except Exception as e:
+            logger.error(f"Error getting turn time remaining: {e}")
+            return None
+    
+    def get_game_state_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of the current game state.
+        
+        Returns:
+            Dictionary with game state information
+        """
+        if not self.game_state:
+            return {'error': 'Game state not initialized'}
+        
+        current_turn = self.game_state.current_turn_info
+        
+        return {
+            'lobby_code': self.game_state.lobby_code,
+            'current_player': current_turn.current_player,
+            'next_player': current_turn.next_player,
+            'turn_number': current_turn.turn_number,
+            'round_number': current_turn.round_number,
+            'questions_this_round': self.game_state.questions_this_round,
+            'max_questions_per_round': self.game_state.max_questions_per_round,
+            'total_questions': self.game_state.total_questions,
+            'turn_order': self.game_state.turn_order,
+            'time_remaining': self.get_turn_time_remaining(),
+            'should_vote': self.should_advance_to_voting(),
+            'current_question': {
+                'asker': current_turn.question_asker,
+                'target': current_turn.question_target,
+                'question': current_turn.question,
+                'answer': current_turn.answer
+            }
+        }
+    
+    def get_status(self) -> Dict[str, Any]:
         """
         Get current status of the turn manager.
         
         Returns:
             Status information dictionary
         """
-        return {
+        base_status = {
+            'lobby_code': self.lobby_code,
             'turn_timeout_seconds': self.turn_timeout_seconds,
-            'manager_initialized': True
+            'max_questions_per_round': self.max_questions_per_round,
+            'manager_initialized': True,
+            'auto_initialization': True,
+            'database_integration': True
         }
+        
+        if self.game_state:
+            base_status.update(self.get_game_state_summary())
+        
+        return base_status
