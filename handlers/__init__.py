@@ -1,14 +1,14 @@
 """
-Event handlers module for The Outsider.
+Event Handlers for The Outsider.
 
-This module contains Socket.IO event handlers and REST API route handlers
-for the Flask-SocketIO backend.
+Contains all Socket.IO event handlers and API route handlers,
+keeping the main app.py minimal and focused on server setup.
 """
 
-from .socket_events import register_socket_handlers
-from .api_routes import register_api_routes
+from .socket_handlers import register_socket_handlers
+from .api_handlers import register_api_handlers
 
 __all__ = [
     'register_socket_handlers',
-    'register_api_routes'
+    'register_api_handlers'
 ]
