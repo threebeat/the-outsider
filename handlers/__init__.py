@@ -1,8 +1,8 @@
 """
-Event Handlers for The Outsider.
+Handlers Module for The Outsider.
 
-Contains all Socket.IO event handlers and API route handlers,
-keeping the main app.py minimal and focused on server setup.
+Contains all web layer handlers (Socket.IO and API) with no business logic.
+Handlers coordinate between web layer and business logic modules.
 """
 
 from .socket_handlers import register_socket_handlers

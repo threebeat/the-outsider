@@ -1,22 +1,29 @@
 """
-Game System for The Outsider.
+Game Module for The Outsider.
 
-Handles game sessions, turns, voting, and AI that operate within lobbies.
-Games are created within existing lobbies and manage the gameplay flow.
+Contains all game-specific logic and components.
+Game operations happen within lobbies but are separate from lobby management.
 """
 
-from .manager import GameManager
-from .session import GameSession
-from .turns import TurnManager
-from .voting import VotingManager
-from .models import GameData, TurnData, VoteData
+from .models import GameData, TurnData, VoteData, GameResult
+from .turn_manager import TurnManager, TurnInfo
+from .question_manager import QuestionManager, QuestionData, AnswerData
+from .vote_manager import VoteManager, VotingSession, VoteResults
 
 __all__ = [
-    'GameManager',
-    'GameSession',
-    'TurnManager', 
-    'VotingManager',
+    # Data models
     'GameData',
-    'TurnData',
-    'VoteData'
+    'TurnData', 
+    'VoteData',
+    'GameResult',
+    'TurnInfo',
+    'QuestionData',
+    'AnswerData',
+    'VotingSession',
+    'VoteResults',
+    
+    # Managers
+    'TurnManager',
+    'QuestionManager',
+    'VoteManager'
 ]
