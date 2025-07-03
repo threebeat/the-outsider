@@ -13,18 +13,18 @@ from typing import Optional, List, Any, Tuple
 # Import cache operations only
 from cache import (
     get_lobby_by_code, get_players_in_lobby, get_ai_players_in_lobby,
-    add_player_to_lobby, create_game, get_game_by_lobby,
+    create_game, get_game_by_lobby,
     PlayerCache, GameCache
 )
-from utils.helpers import get_random_available_name
-from utils.constants import LOCATIONS, AI_PERSONALITIES
+from ai.player_initializer import ai_player_initializer
+from utils.constants import LOCATIONS
 
 logger = logging.getLogger(__name__)
 
 class GameCreator:
     """
     Handles game creation and AI player population.
-    Uses Redis cache only.
+    Uses Redis cache only and delegates AI player creation to AI module.
     """
     
     def __init__(self):
@@ -55,21 +55,22 @@ class GameCreator:
             existing_ai = get_ai_players_in_lobby(lobby_code)
             existing_ai_count = len(existing_ai)
             
-            # Determine how many AI players to add
+            # Determine if we need to add AI players
             if existing_ai_count >= min_ai_players:
                 logger.info(f"Lobby {lobby_code} already has {existing_ai_count} AI players, no need to add more")
                 return True, f"Lobby already has {existing_ai_count} AI players"
             
-            # Calculate number of AI players to add
-            ai_players_needed = random.randint(min_ai_players, max_ai_players) - existing_ai_count
-            ai_players_needed = max(0, ai_players_needed)  # Ensure non-negative
+            # Use AI player initializer to create AI players
+            success, message, created_players = ai_player_initializer.initialize_ai_players(
+                lobby_code, min_ai_players, max_ai_players
+            )
             
-            if ai_players_needed > 0:
-                added_players = self._add_ai_players(lobby_code, ai_players_needed)
-                logger.info(f"Added {len(added_players)} AI players to lobby {lobby_code}")
-                return True, f"Added {len(added_players)} AI players"
+            if success:
+                logger.info(f"Successfully initialized AI players for lobby {lobby_code}: {message}")
+                return True, message
             else:
-                return True, "No AI players needed"
+                logger.error(f"Failed to initialize AI players for lobby {lobby_code}: {message}")
+                return False, message
             
         except Exception as e:
             logger.error(f"Error creating game for lobby {lobby_code}: {e}")
@@ -139,10 +140,11 @@ class GameCreator:
                 logger.error(f"Lobby {lobby_code} not found")
                 return False
             
-            # Check for AI players (who are automatically outsiders)
-            ai_players = get_ai_players_in_lobby(lobby_code)
-            if not ai_players:
-                logger.warning(f"No AI players in lobby {lobby_code} - game not ready")
+            # Use AI player initializer to validate AI players
+            is_valid, message, validation_info = ai_player_initializer.validate_ai_players(lobby_code)
+            
+            if not is_valid:
+                logger.warning(f"AI players validation failed for lobby {lobby_code}: {message}")
                 return False
             
             # Check total player count
@@ -153,95 +155,31 @@ class GameCreator:
                 logger.warning(f"Not enough players in lobby {lobby_code} ({len(connected_players)}) - need at least 2")
                 return False
             
-            logger.debug(f"Game ready for lobby {lobby_code}: {len(connected_players)} players, {len(ai_players)} AI")
+            ai_count = validation_info.get('ai_count', 0)
+            logger.debug(f"Game ready for lobby {lobby_code}: {len(connected_players)} players, {ai_count} AI")
             return True
             
         except Exception as e:
             logger.error(f"Error validating game readiness for lobby {lobby_code}: {e}")
             return False
     
-    def _add_ai_players(self, lobby_code: str, count: int) -> List[PlayerCache]:
+    def add_ai_player(self, lobby_code: str) -> Tuple[bool, str, Optional[PlayerCache]]:
         """
-        Add AI players to a lobby.
-        
-        Args:
-            lobby_code: Code of the lobby
-            count: Number of AI players to add
-            
-        Returns:
-            List of created AI players
-        """
-        created_players = []
-        
-        try:
-            for i in range(count):
-                # Generate unique AI name
-                name = self._generate_unique_ai_name(lobby_code)
-                personality = random.choice(AI_PERSONALITIES)
-                
-                # Create AI player cache object
-                ai_player = PlayerCache(
-                    session_id=f"ai_{random.randint(100000, 999999)}",
-                    username=name,
-                    is_ai=True,
-                    ai_personality=personality
-                )
-                
-                # Add to lobby
-                success = add_player_to_lobby(lobby_code, ai_player)
-                
-                if success:
-                    created_players.append(ai_player)
-                    logger.info(f"Created AI player '{name}' with personality '{personality}'")
-                else:
-                    logger.error(f"Failed to create AI player for lobby {lobby_code}")
-            
-        except Exception as e:
-            logger.error(f"Error adding AI players to lobby {lobby_code}: {e}")
-        
-        return created_players
-    
-    def _generate_unique_ai_name(self, lobby_code: str) -> str:
-        """
-        Generate a unique AI name for the lobby.
+        Add a single AI player to a lobby.
         
         Args:
             lobby_code: Code of the lobby
             
         Returns:
-            Unique AI name
+            Tuple of (success, message, created_player)
         """
-        existing_players = get_players_in_lobby(lobby_code)
-        existing_names = [player.username for player in existing_players if player.is_connected]
-        
-        # Use name generator to get unique name
         try:
-            name = get_random_available_name(existing_names)
+            # Delegate to AI player initializer
+            return ai_player_initializer.add_single_ai_player(lobby_code)
             
-            if name:
-                return name
         except Exception as e:
-            logger.warning(f"Error using AI name generator: {e}")
-        
-        # Fallback: use predefined names
-        fallback_names = [
-            'Alex', 'Blake', 'Casey', 'Drew', 'Ellis', 'Finley', 'Gray', 'Harper',
-            'Indigo', 'Jules', 'Kai', 'Lane', 'Morgan', 'Nova', 'Ocean', 'Parker',
-            'Quinn', 'River', 'Sage', 'Taylor', 'Unity', 'Vale', 'Winter', 'Zara'
-        ]
-        
-        available_names = [name for name in fallback_names if name not in existing_names]
-        
-        if available_names:
-            return random.choice(available_names)
-        
-        # Final fallback: add number suffix
-        base_name = "AI"
-        counter = 1
-        while f"{base_name}_{counter}" in existing_names:
-            counter += 1
-        
-        return f"{base_name}_{counter}"
+            logger.error(f"Error adding AI player to lobby {lobby_code}: {e}")
+            return False, f"Error adding AI player: {str(e)}", None
     
     def get_game_info(self, lobby_code: str) -> dict:
         """
@@ -265,6 +203,9 @@ class GameCreator:
             # Get game data if exists
             game = get_game_by_lobby(lobby_code)
             
+            # Get AI status from AI player initializer
+            ai_status = ai_player_initializer.get_ai_status(lobby_code)
+            
             return {
                 'lobby_code': lobby_code,
                 'lobby_name': lobby.name,
@@ -275,6 +216,7 @@ class GameCreator:
                 'human_players': len(human_players),
                 'ready_to_start': self.validate_game_ready(lobby_code),
                 'ai_player_names': [p.username for p in ai_players],
+                'ai_status': ai_status,
                 'game_exists': game is not None
             }
             
