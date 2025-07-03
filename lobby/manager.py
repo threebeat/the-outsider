@@ -107,7 +107,8 @@ class LobbyManager:
                 )
                 
                 # Load players from database
-                for db_player in db_lobby.active_players:
+                from database_getters import get_active_players_in_lobby
+                for db_player in get_active_players_in_lobby(db_lobby.id):
                     player_data = PlayerData(
                         session_id=db_player.session_id,
                         username=db_player.username,

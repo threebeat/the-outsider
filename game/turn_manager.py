@@ -86,7 +86,8 @@ class TurnManager:
                     raise ValueError(f"Lobby {self.lobby_code} not found")
                 
                 # Get active players
-                active_players = [p.username for p in lobby.active_players]
+                from database_getters import get_active_players_in_lobby
+                active_players = [p.username for p in get_active_players_in_lobby(lobby.id)]
                 if len(active_players) < 2:
                     raise ValueError("Need at least 2 players to start game")
                 

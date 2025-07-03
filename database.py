@@ -127,20 +127,7 @@ class Lobby(Base):
         """Update the last activity timestamp."""
         self.last_activity = datetime.now(timezone.utc)
     
-    @property
-    def active_players(self) -> List['Player']:
-        """Get all connected, active players."""
-        return [p for p in self.players if p.is_connected and not p.is_spectator]
-    
-    @property
-    def human_players(self) -> List['Player']:
-        """Get all human (non-AI) players."""
-        return [p for p in self.active_players if not p.is_ai]
-    
-    @property
-    def ai_players(self) -> List['Player']:
-        """Get all AI players (who are automatically outsiders)."""
-        return [p for p in self.active_players if p.is_ai]
+# Property methods moved to database_getters.py for proper separation of concerns
 
 class Player(Base):
     """Represents a player in the game."""
