@@ -1,14 +1,16 @@
 """
-Database models and initialization for The Outsider game.
+Database module for The Outsider game.
 
-This module contains all database models and helper functions for managing
-lobbies, players, games, and statistics in the social deduction game.
+Organized into three sections:
+1. Initialization - Sets up database and creates default lobby
+2. Universal Getters - Read operations from database
+3. Universal Setters - Write operations to database
 """
 
 import os
 import logging
-from datetime import datetime, timezone
-from typing import List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, DateTime, Float, Index
@@ -75,7 +77,9 @@ def get_db_session():
     finally:
         session.close()
 
-# Database Models
+# ==============================================================================
+# DATABASE MODELS
+# ==============================================================================
 
 class Lobby(Base):
     """Represents a game lobby where players join and play."""
@@ -350,10 +354,12 @@ class GameStatistics(Base):
             self.human_win_rate = (self.human_wins / self.total_games) * 100
         self.last_updated = datetime.now(timezone.utc)
 
-# Database initialization and helper functions
+# ==============================================================================
+# SECTION 1: INITIALIZATION
+# ==============================================================================
 
 def init_database():
-    """Initialize the database and create all tables."""
+    """Initialize the database, create tables, and create default lobby."""
     try:
         # Create all tables
         Base.metadata.create_all(bind=engine)
@@ -366,6 +372,19 @@ def init_database():
                 stats = GameStatistics(lobby_code='main')
                 session.add(stats)
                 logger.info("Created default game statistics")
+        
+        # Clean the database but preserve statistics
+        clean_database()
+        
+        # Create default lobby using lobby_creator
+        from lobby.lobby_creator import LobbyCreator
+        lobby_creator = LobbyCreator()
+        success, message, lobby_config = lobby_creator.create_default_lobby()
+        
+        if success:
+            logger.info(f"Created default lobby: {message}")
+        else:
+            logger.warning(f"Failed to create default lobby: {message}")
                 
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
@@ -416,6 +435,76 @@ def clean_database():
         logger.error(f"Failed to clean database: {e}")
         raise
 
+# ==============================================================================
+# SECTION 2: UNIVERSAL GETTERS
+# ==============================================================================
+
+def get_lobby_by_code(session, code: str) -> Optional[Lobby]:
+    """Get a lobby by its code."""
+    return session.query(Lobby).filter_by(code=code).first()
+
+def get_lobby_by_id(session, lobby_id: int) -> Optional[Lobby]:
+    """Get a lobby by its ID."""
+    return session.query(Lobby).filter_by(id=lobby_id).first()
+
+def get_player_by_session_id(session, session_id: str) -> Optional[Player]:
+    """Get a player by their session ID."""
+    return session.query(Player).filter_by(session_id=session_id, is_connected=True).first()
+
+def get_player_by_username(session, lobby_id: int, username: str) -> Optional[Player]:
+    """Get a player by username in a specific lobby."""
+    return session.query(Player).filter_by(
+        lobby_id=lobby_id,
+        username=username,
+        is_connected=True
+    ).first()
+
+def get_active_lobbies(session) -> List[Lobby]:
+    """Get all active lobbies."""
+    return session.query(Lobby).filter(
+        Lobby.state.in_(['waiting', 'playing'])
+    ).all()
+
+def get_game_statistics(session, lobby_code: str = 'main') -> Optional[GameStatistics]:
+    """Get game statistics for a lobby."""
+    return session.query(GameStatistics).filter_by(lobby_code=lobby_code).first()
+
+def get_active_game_session(session, lobby_id: int) -> Optional[GameSession]:
+    """Get the active game session for a lobby."""
+    return session.query(GameSession).filter_by(
+        lobby_id=lobby_id,
+        ended_at=None
+    ).first()
+
+def get_player_count_in_lobby(session, lobby_id: int) -> int:
+    """Get the number of active players in a lobby."""
+    return session.query(Player).filter_by(
+        lobby_id=lobby_id,
+        is_connected=True,
+        is_spectator=False
+    ).count()
+
+def get_ai_players_in_lobby(session, lobby_id: int) -> List[Player]:
+    """Get all AI players in a lobby."""
+    return session.query(Player).filter_by(
+        lobby_id=lobby_id,
+        is_ai=True,
+        is_connected=True
+    ).all()
+
+def get_human_players_in_lobby(session, lobby_id: int) -> List[Player]:
+    """Get all human players in a lobby."""
+    return session.query(Player).filter_by(
+        lobby_id=lobby_id,
+        is_ai=False,
+        is_connected=True,
+        is_spectator=False
+    ).all()
+
+# ==============================================================================
+# SECTION 3: UNIVERSAL SETTERS
+# ==============================================================================
+
 def create_lobby(session, code: str, name: str, max_players: int = 8) -> Lobby:
     """Create a new lobby."""
     lobby = Lobby(
@@ -428,77 +517,52 @@ def create_lobby(session, code: str, name: str, max_players: int = 8) -> Lobby:
     logger.info(f"Created lobby: {code}")
     return lobby
 
-def get_lobby_by_code(session, code: str) -> Optional[Lobby]:
-    """Get a lobby by its code."""
-    return session.query(Lobby).filter_by(code=code).first()
-
-def add_player_to_lobby(session, lobby: Lobby, session_id: str, username: str, 
-                       is_ai: bool = False, is_spectator: bool = False) -> Player:
-    """Add a player to a lobby."""
-    # Check if player already exists (reconnection)
-    existing_player = session.query(Player).filter_by(
-        lobby_id=lobby.id, 
-        session_id=session_id
-    ).first()
-    
-    if existing_player:
-        existing_player.username = username
-        existing_player.is_connected = True
-        existing_player.update_last_seen()
-        logger.info(f"Reconnected player: {username}")
-        return existing_player
-    
-    # Check username uniqueness in active players
-    username_taken = session.query(Player).filter_by(
-        lobby_id=lobby.id,
-        username=username,
-        is_connected=True
-    ).first()
-    
-    if username_taken:
-        raise ValueError(f"Username '{username}' is already taken")
-    
-    # Check lobby capacity
-    active_count = len(lobby.active_players)
-    if active_count >= lobby.max_players:
-        raise ValueError(f"Lobby is full ({lobby.max_players} players max)")
-    
+def create_player(session, lobby_id: int, session_id: str, username: str, 
+                 is_ai: bool = False, is_spectator: bool = False,
+                 ai_personality: Optional[str] = None) -> Player:
+    """Create a new player."""
     player = Player(
-        lobby_id=lobby.id,
+        lobby_id=lobby_id,
         session_id=session_id,
         username=username,
         is_ai=is_ai,
-        is_spectator=is_spectator
+        is_spectator=is_spectator,
+        ai_personality=ai_personality
     )
     session.add(player)
     session.flush()
-    
-    lobby.update_activity()
-    logger.info(f"Added player '{username}' to lobby '{lobby.code}'")
+    logger.info(f"Created player '{username}' in lobby {lobby_id} (AI: {is_ai})")
     return player
 
-def remove_player_from_lobby(session, player: Player):
-    """Remove a player from their lobby."""
-    lobby = player.lobby
-    logger.info(f"Removing player '{player.username}' from lobby '{lobby.code}'")
-    session.delete(player)
+def update_lobby_state(session, lobby: Lobby, new_state: str):
+    """Update lobby state."""
+    lobby.state = new_state
     lobby.update_activity()
+    logger.info(f"Updated lobby {lobby.code} state to: {new_state}")
 
-def disconnect_player(session, player: Player):
-    """Mark a player as disconnected."""
-    player.is_connected = False
-    player.lobby.update_activity()
-    logger.info(f"Disconnected player: {player.username}")
+def update_player_connection(session, player: Player, connected: bool):
+    """Update player connection status."""
+    player.is_connected = connected
+    player.update_last_seen()
+    logger.info(f"Updated player {player.username} connection: {connected}")
 
-def start_game_session(session, lobby: Lobby, location: str) -> GameSession:
-    """Start a new game session."""
-    human_count = len(lobby.human_players)
-    ai_count = len(lobby.ai_players)
-    
+def set_player_as_outsider(session, player: Player):
+    """Mark a player as the outsider."""
+    player.is_outsider = True
+    if player.lobby:
+        player.lobby.outsider_player_id = player.id
+    logger.info(f"Set player {player.username} as outsider")
+
+def create_game_session(session, lobby: Lobby, location: str) -> GameSession:
+    """Create a new game session."""
     # Get next session number
     last_session = session.query(GameSession).filter_by(lobby_id=lobby.id)\
         .order_by(GameSession.session_number.desc()).first()
     session_number = (last_session.session_number + 1) if last_session else 1
+    
+    # Count players
+    human_count = len(lobby.human_players)
+    ai_count = len(lobby.ai_players)
     
     game_session = GameSession(
         lobby_id=lobby.id,
@@ -512,7 +576,7 @@ def start_game_session(session, lobby: Lobby, location: str) -> GameSession:
     session.add(game_session)
     session.flush()
     
-    # Update lobby state
+    # Update lobby
     lobby.state = 'playing'
     lobby.location = location
     lobby.started_at = datetime.now(timezone.utc)
@@ -520,48 +584,47 @@ def start_game_session(session, lobby: Lobby, location: str) -> GameSession:
     lobby.question_count = 0
     lobby.update_activity()
     
-    logger.info(f"Started game session {session_number} in lobby '{lobby.code}' with location '{location}'")
+    logger.info(f"Created game session {session_number} in lobby '{lobby.code}' with location '{location}'")
     return game_session
 
-def end_game_session(session, lobby: Lobby, winner: str, reason: str, 
-                    eliminated_player: Optional[Player] = None,
-                    ai_guess: Optional[str] = None, ai_correct: bool = False):
-    """End the current game session."""
-    current_session = session.query(GameSession).filter_by(lobby_id=lobby.id)\
-        .order_by(GameSession.session_number.desc()).first()
-    
-    if current_session and not current_session.ended_at:
-        current_session.ended_at = datetime.now(timezone.utc)
-        current_session.winner = winner
-        current_session.winner_reason = reason
-        current_session.total_questions = lobby.question_count
-        current_session.ai_final_guess = ai_guess
-        current_session.ai_guessed_correctly = ai_correct
-        
-        if eliminated_player:
-            current_session.eliminated_player_id = eliminated_player.id
-            current_session.outsider_eliminated = eliminated_player.is_outsider
-        
-        # Calculate duration
-        if current_session.started_at:
-            duration = current_session.ended_at - current_session.started_at
-            current_session.duration_seconds = int(duration.total_seconds())
-        
-        # Update lobby state
-        lobby.state = 'finished'
-        lobby.ended_at = current_session.ended_at
-        lobby.update_activity()
-        
-        # Update global statistics
-        update_game_statistics(session, lobby.code, winner, current_session.duration_seconds)
-        
-        logger.info(f"Ended game session in lobby '{lobby.code}': {winner} won ({reason})")
+def create_game_message(session, lobby_id: int, content: str, message_type: str = 'chat',
+                       sender_id: Optional[int] = None, target_id: Optional[int] = None,
+                       is_question: bool = False) -> GameMessage:
+    """Create a new game message."""
+    message = GameMessage(
+        lobby_id=lobby_id,
+        content=content,
+        message_type=message_type,
+        sender_id=sender_id,
+        target_id=target_id,
+        is_question=is_question
+    )
+    session.add(message)
+    session.flush()
+    return message
 
-def update_game_statistics(session, lobby_code: str, winner: str, duration_seconds: int):
+def create_vote(session, lobby_id: int, voter_id: int, target_id: int,
+               vote_round: int = 1, confidence: Optional[float] = None,
+               reasoning: Optional[str] = None) -> Vote:
+    """Create a new vote."""
+    vote = Vote(
+        lobby_id=lobby_id,
+        voter_id=voter_id,
+        target_id=target_id,
+        vote_round=vote_round,
+        confidence=confidence,
+        reasoning=reasoning
+    )
+    session.add(vote)
+    session.flush()
+    logger.info(f"Created vote in lobby {lobby_id}")
+    return vote
+
+def update_game_statistics(session, winner: str):
     """Update global game statistics."""
-    stats = session.query(GameStatistics).filter_by(lobby_code=lobby_code).first()
+    stats = get_game_statistics(session)
     if not stats:
-        stats = GameStatistics(lobby_code=lobby_code)
+        stats = GameStatistics(lobby_code='main')
         session.add(stats)
     
     stats.total_games += 1
@@ -570,60 +633,12 @@ def update_game_statistics(session, lobby_code: str, winner: str, duration_secon
     elif winner == 'ai':
         stats.ai_wins += 1
     
-    # Update averages
-    if duration_seconds:
-        if stats.avg_game_duration:
-            stats.avg_game_duration = (stats.avg_game_duration + duration_seconds) / 2
-        else:
-            stats.avg_game_duration = duration_seconds
-    
     stats.update_stats()
+    logger.info(f"Updated statistics: {winner} won (Total: {stats.total_games})")
 
-def reset_lobby(session, lobby: Lobby):
-    """Reset a lobby to waiting state."""
-    lobby.state = 'waiting'
-    lobby.location = None
-    lobby.current_turn = 0
-    lobby.question_count = 0
-    lobby.outsider_player_id = None
-    lobby.started_at = None
-    lobby.ended_at = None
-    lobby.update_activity()
-    
-    # Reset player states
-    for player in lobby.players:
-        if player.is_connected:
-            player.is_outsider = False
-            player.questions_asked = 0
-            player.questions_answered = 0
-            player.votes_received = 0
-    
-    # Clear votes
-    session.query(Vote).filter_by(lobby_id=lobby.id).delete()
-    
-    logger.info(f"Reset lobby '{lobby.code}' to waiting state")
-
-def get_game_statistics(session, lobby_code: str = 'main') -> Optional[GameStatistics]:
-    """Get game statistics for a lobby."""
-    return session.query(GameStatistics).filter_by(lobby_code=lobby_code).first()
-
-def cleanup_inactive_lobbies(session, hours_inactive: int = 24):
-    """Clean up lobbies that have been inactive for too long."""
-    from datetime import timedelta
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_inactive)
-    
-    inactive_lobbies = session.query(Lobby).filter(
-        Lobby.last_activity < cutoff_time,
-        Lobby.state.in_(['finished', 'waiting'])
-    ).all()
-    
-    for lobby in inactive_lobbies:
-        logger.info(f"Cleaning up inactive lobby: {lobby.code}")
-        session.delete(lobby)
-    
-    return len(inactive_lobbies)
-
-if __name__ == "__main__":
-    # Initialize database when run directly
-    init_database()
-    print("Database initialized successfully!")
+def delete_player(session, player: Player):
+    """Delete a player from the database."""
+    username = player.username
+    lobby_code = player.lobby.code if player.lobby else "unknown"
+    session.delete(player)
+    logger.info(f"Deleted player '{username}' from lobby '{lobby_code}'")

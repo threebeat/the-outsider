@@ -382,6 +382,146 @@ class LobbyCreator:
         
         return available[:count]
     
+    def create_default_lobby(self) -> Tuple[bool, str, Optional[LobbyConfiguration]]:
+        """
+        Create a default lobby for initial database setup.
+        
+        This method is called during database initialization to ensure
+        there's always at least one lobby available.
+        
+        Returns:
+            tuple: (success, message, lobby_config)
+        """
+        try:
+            # Generate lobby code
+            lobby_code = self.generate_lobby_code("MAIN")
+            if lobby_code == "ERROR":
+                lobby_code = "MAIN01"  # Fallback
+            
+            # Validate lobby name
+            lobby_name = "Main Lobby"
+            is_valid, error_msg = self.validate_lobby_name(lobby_name)
+            if not is_valid:
+                logger.warning(f"Default lobby name validation failed: {error_msg}")
+                lobby_name = "Default Game"
+            
+            # Create configuration with default settings
+            config = self.create_lobby_config({
+                'max_players': 8,
+                'min_players': 3,
+                'allow_ai_players': True,
+                'max_ai_players': 3,
+                'questions_per_round': 3
+            })
+            
+            # Import database functions to create the lobby
+            from database import get_db_session, create_lobby
+            
+            with get_db_session() as session:
+                # Create the lobby in database
+                lobby = create_lobby(session, lobby_code, lobby_name, config.max_players)
+                
+                # Import game creator to initialize the game with AI players
+                from game.game_creator import GameCreator
+                game_creator = GameCreator()
+                
+                # Create initial game with AI players
+                ai_count = min(3, config.max_ai_players)  # 1-3 AI players
+                success, message = game_creator.create_game_with_ai(
+                    session, 
+                    lobby.id, 
+                    ai_count
+                )
+                
+                if success:
+                    logger.info(f"Created default lobby '{lobby_name}' with code '{lobby_code}' and {ai_count} AI players")
+                    return True, f"Default lobby created successfully with {ai_count} AI players", config
+                else:
+                    logger.warning(f"Created default lobby but failed to add AI players: {message}")
+                    return True, "Default lobby created (without AI players)", config
+                    
+        except ImportError as e:
+            logger.error(f"Import error creating default lobby: {e}")
+            return False, "Failed to import required modules", None
+        except Exception as e:
+            logger.error(f"Error creating default lobby: {e}")
+            return False, f"Failed to create default lobby: {str(e)}", None
+    
+    def create_lobby(self, name: str, creator_username: str, 
+                    custom_code: Optional[str] = None,
+                    custom_settings: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Create a new lobby with automatic AI player population.
+        
+        This is the main method for creating lobbies. It automatically
+        calls game_creator to populate 1-3 AI players.
+        
+        Args:
+            name: Lobby name
+            creator_username: Username of the creator
+            custom_code: Optional custom lobby code
+            custom_settings: Optional custom settings
+            
+        Returns:
+            tuple: (success, message, lobby_data)
+        """
+        try:
+            # Validate lobby name
+            is_valid, error_msg = self.validate_lobby_name(name)
+            if not is_valid:
+                return False, error_msg, None
+            
+            # Generate or validate lobby code
+            lobby_code = self.generate_lobby_code(custom_code)
+            if lobby_code == "ERROR":
+                return False, "Failed to generate lobby code", None
+            
+            # Create configuration
+            config = self.create_lobby_config(custom_settings)
+            
+            # Import database functions
+            from database import get_db_session, create_lobby as db_create_lobby
+            
+            with get_db_session() as session:
+                # Create lobby in database
+                lobby = db_create_lobby(session, lobby_code, name, config.max_players)
+                
+                # Import game creator to populate AI players
+                from game.game_creator import GameCreator
+                game_creator = GameCreator()
+                
+                # Determine AI count (1-3 players)
+                ai_count = random.randint(1, min(3, config.max_ai_players))
+                
+                # Create game with AI players
+                success, ai_message = game_creator.create_game_with_ai(
+                    session,
+                    lobby.id,
+                    ai_count
+                )
+                
+                if not success:
+                    logger.warning(f"Failed to add AI players to lobby {lobby_code}: {ai_message}")
+                
+                # Prepare lobby data for response
+                lobby_data = self.create_lobby_data(name, creator_username, lobby_code, config)
+                lobby_data['id'] = lobby.id
+                lobby_data['ai_player_count'] = ai_count if success else 0
+                
+                message = f"Lobby '{name}' created with code '{lobby_code}'"
+                if success:
+                    message += f" and {ai_count} AI players"
+                
+                logger.info(message)
+                return True, message, lobby_data
+                
+        except ImportError as e:
+            logger.error(f"Import error creating lobby: {e}")
+            return False, "Failed to import required modules", None
+        except Exception as e:
+            logger.error(f"Error creating lobby: {e}")
+            return False, f"Failed to create lobby: {str(e)}", None
+    
     def get_creator_status(self) -> Dict[str, Any]:
         """
         Get current status of the lobby creator.

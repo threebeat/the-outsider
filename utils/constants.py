@@ -56,6 +56,16 @@ AI_DIFFICULTIES = {
     'HARD': 'hard'
 }
 
+# AI personality types
+AI_PERSONALITIES = [
+    'cautious',      # Asks safe questions, gives vague answers
+    'aggressive',    # Asks direct questions, challenges others
+    'analytical',    # Asks logical questions, methodical approach
+    'friendly',      # Asks personal questions, builds rapport
+    'deceptive',     # Misdirects, creates confusion
+    'observant'      # Notices patterns, asks follow-up questions
+]
+
 # Winner types
 WINNER_TYPES = {
     'HUMANS': 'humans',
