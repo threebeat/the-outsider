@@ -1,27 +1,21 @@
 """
 The Outsider - A Social Deduction Game Backend
 
-Flask-SocketIO backend API that serves a React frontend.
-Handles real-time multiplayer game logic where players try to identify 
-the AI "outsider" who doesn't know the secret location.
+Clean Flask-SocketIO application that serves as an API backend for a React frontend.
+All game logic is modularized into separate components.
 """
 
 import os
 import logging
-import random
-from typing import Optional, List, Dict
 from flask import Flask, request, jsonify
-from flask_socketio import SocketIO, emit, join_room, leave_room, disconnect
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
+from dotenv import load_dotenv
 
-# Import our database components
-from database import (
-    init_database, get_db_session, create_lobby, get_lobby_by_code,
-    add_player_to_lobby, remove_player_from_lobby, disconnect_player,
-    start_game_session, end_game_session, reset_lobby, get_game_statistics,
-    cleanup_inactive_lobbies
-)
+# Import our modular game system
+from game.manager import GameManager
+from database import init_database, get_game_statistics, get_db_session
 
 # Configure logging
 logging.basicConfig(
@@ -31,7 +25,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-from dotenv import load_dotenv
 load_dotenv()
 
 # Flask configuration
@@ -55,453 +48,8 @@ socketio = SocketIO(
     engineio_logger=True
 )
 
-# Game constants
-LOCATIONS = [
-    "Airport", "Bank", "Beach", "Casino", "Cathedral", "Circus Tent",
-    "Corporate Party", "Crusader Army", "Day Spa", "Embassy", "Hospital",
-    "Hotel", "Military Base", "Movie Studio", "Museum", "Ocean Liner",
-    "Passenger Train", "Pirate Ship", "Polar Station", "Police Station",
-    "Restaurant", "School", "Service Station", "Space Station", "Submarine",
-    "Supermarket", "Theater", "University", "World War II Squad", "Zoo"
-]
-
-AI_NAMES = [
-    "Alex", "Blake", "Casey", "Drew", "Ellis", "Finley", "Gray", "Harper",
-    "Indigo", "Jules", "Kai", "Lane", "Morgan", "Nova", "Ocean", "Parker"
-]
-
-# Global game state
-active_lobbies: Dict[str, 'GameManager'] = {}  # In-memory cache for quick access
-player_lobby_map: Dict[str, str] = {}  # Maps session_id to lobby_code
-
-class GameManager:
-    """Manages game state and logic for a lobby."""
-    
-    def __init__(self, lobby_code: str):
-        self.lobby_code = lobby_code
-        self.current_asker = None
-        self.current_target = None
-        self.turn_order = []
-        self.votes = {}  # Track votes during voting phase
-        
-    def get_lobby_data(self):
-        """Get current lobby data for frontend."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return None
-                
-            players_data = []
-            for player in lobby.active_players:
-                players_data.append({
-                    'id': player.id,
-                    'username': player.username,
-                    'is_ai': player.is_ai,
-                    'is_outsider': player.is_outsider,
-                    'questions_asked': player.questions_asked,
-                    'questions_answered': player.questions_answered,
-                    'is_connected': player.is_connected
-                })
-            
-            return {
-                'code': lobby.code,
-                'name': lobby.name,
-                'state': lobby.state,
-                'location': lobby.location if lobby.state != 'waiting' else None,
-                'current_turn': lobby.current_turn,
-                'question_count': lobby.question_count,
-                'max_questions': lobby.max_questions,
-                'players': players_data,
-                'current_asker': self.current_asker,
-                'current_target': self.current_target,
-                'total_players': len(players_data)
-            }
-    
-    def start_game(self):
-        """Start a new game session."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby or lobby.state != 'waiting':
-                return False
-                
-            # Need at least 1 human player
-            if len(lobby.human_players) < 1:
-                return False
-            
-            # Add AI player if needed
-            if len(lobby.ai_players) == 0:
-                ai_name = random.choice([name for name in AI_NAMES 
-                                       if name not in [p.username for p in lobby.active_players]])
-                try:
-                    ai_player = add_player_to_lobby(
-                        session, lobby, f"ai_{random.randint(1000, 9999)}", 
-                        ai_name, is_ai=True
-                    )
-                    logger.info(f"Added AI player {ai_name} to lobby {self.lobby_code}")
-                except ValueError as e:
-                    logger.error(f"Failed to add AI player: {e}")
-                    return False
-            
-            # Select random location
-            location = random.choice(LOCATIONS)
-            
-            # Choose outsider (always AI for now)
-            ai_players = lobby.ai_players
-            if ai_players:
-                outsider = random.choice(ai_players)
-                outsider.is_outsider = True
-                lobby.outsider_player_id = outsider.id
-                logger.info(f"Selected {outsider.username} as outsider")
-            
-            # Set up turn order
-            all_players = lobby.active_players
-            random.shuffle(all_players)
-            self.turn_order = [p.session_id for p in all_players]
-            
-            # Start game session
-            start_game_session(session, lobby, location)
-            
-            # Notify all players
-            self.broadcast_game_update("Game started! Try to identify the outsider.", include_location=False)
-            
-            # Start first turn
-            self.start_next_turn()
-            
-            return True
-    
-    def start_next_turn(self):
-        """Start the next player's turn."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby or lobby.state != 'playing':
-                return
-            
-            if lobby.question_count >= lobby.max_questions:
-                self.start_voting_phase()
-                return
-            
-            # Get current turn player
-            if lobby.current_turn < len(self.turn_order):
-                asker_sid = self.turn_order[lobby.current_turn]
-                
-                # Find asker player
-                asker = None
-                for player in lobby.active_players:
-                    if player.session_id == asker_sid:
-                        asker = player
-                        break
-                
-                if asker:
-                    self.current_asker = asker.username
-                    
-                    # Choose random target (not the asker)
-                    possible_targets = [p for p in lobby.active_players if p.id != asker.id]
-                    if possible_targets:
-                        target = random.choice(possible_targets)
-                        self.current_target = target.username
-                        
-                        logger.info(f"Turn {lobby.current_turn + 1}: {asker.username} asks {target.username}")
-                        
-                        self.broadcast_game_update(
-                            f"Turn {lobby.current_turn + 1}: {asker.username}, ask {target.username} a question!"
-                        )
-                        
-                        # If it's an AI's turn, generate a question
-                        if asker.is_ai:
-                            self.handle_ai_question(asker, target)
-    
-    def handle_ai_question(self, asker, target):
-        """Handle AI asking a question."""
-        # Simple AI question generation for now
-        questions = [
-            f"{target.username}, what's the first thing you notice when you arrive here?",
-            f"{target.username}, what would you typically wear in this place?",
-            f"{target.username}, who else would you expect to see here?",
-            f"{target.username}, what sounds do you hear in this environment?",
-            f"{target.username}, what's the most important rule to follow here?"
-        ]
-        
-        question = random.choice(questions)
-        
-        # Add delay to make it feel more natural
-        def delayed_question():
-            socketio.emit('new_question', {
-                'asker': asker.username,
-                'target': target.username,
-                'question': question
-            }, room=self.lobby_code)
-            
-            # If target is also AI, generate answer
-            if target.is_ai:
-                self.handle_ai_answer(target, question)
-        
-        socketio.start_background_task(lambda: socketio.sleep(2) or delayed_question())
-    
-    def handle_ai_answer(self, player, question):
-        """Handle AI answering a question."""
-        # Simple AI answer generation
-        if player.is_outsider:
-            # Outsider tries to blend in without knowing the location
-            answers = [
-                "I think the atmosphere is quite nice here.",
-                "It depends on the situation, really.",
-                "I'd say it's pretty typical for a place like this.",
-                "You have to adapt to your surroundings.",
-                "I prefer to observe first before acting."
-            ]
-        else:
-            # Regular AI knows the location but gives vague answers
-            answers = [
-                "The environment definitely shapes how you behave.",
-                "I always try to respect the space I'm in.",
-                "It's important to follow the established protocols.",
-                "You can usually tell a lot by watching others.",
-                "I think common sense applies in most situations."
-            ]
-        
-        answer = random.choice(answers)
-        
-        def delayed_answer():
-            self.handle_answer(player.session_id, answer)
-        
-        socketio.start_background_task(lambda: socketio.sleep(3) or delayed_answer())
-    
-    def handle_question(self, asker_sid: str, target_username: str, question: str):
-        """Handle a question being asked."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return False
-                
-            # Verify it's the asker's turn
-            if lobby.current_turn >= len(self.turn_order):
-                return False
-                
-            expected_asker_sid = self.turn_order[lobby.current_turn]
-            if asker_sid != expected_asker_sid:
-                return False
-            
-            # Find players
-            asker = None
-            target = None
-            for player in lobby.active_players:
-                if player.session_id == asker_sid:
-                    asker = player
-                elif player.username == target_username:
-                    target = player
-            
-            if not asker or not target:
-                return False
-            
-            # Update question count
-            asker.questions_asked += 1
-            
-            # Broadcast question
-            socketio.emit('new_question', {
-                'asker': asker.username,
-                'target': target.username,
-                'question': question
-            }, room=self.lobby_code)
-            
-            # If target is AI, generate answer
-            if target.is_ai:
-                self.handle_ai_answer(target, question)
-            
-            return True
-    
-    def handle_answer(self, answerer_sid: str, answer: str):
-        """Handle an answer being given."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return False
-            
-            # Find answerer
-            answerer = None
-            for player in lobby.active_players:
-                if player.session_id == answerer_sid:
-                    answerer = player
-                    break
-            
-            if not answerer:
-                return False
-            
-            # Update stats
-            answerer.questions_answered += 1
-            lobby.question_count += 1
-            lobby.current_turn += 1
-            
-            # Broadcast answer
-            socketio.emit('new_answer', {
-                'answerer': answerer.username,
-                'answer': answer
-            }, room=self.lobby_code)
-            
-            # Start next turn
-            socketio.start_background_task(lambda: socketio.sleep(2) or self.start_next_turn())
-            
-            return True
-    
-    def start_voting_phase(self):
-        """Start the voting phase."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return
-                
-            lobby.state = 'voting'
-            self.votes = {}  # Reset votes
-            
-            self.broadcast_game_update("Voting phase! Choose who you think is the outsider.")
-            
-            socketio.emit('voting_started', {
-                'players': [{'username': p.username, 'id': p.id} for p in lobby.active_players if not p.is_ai]
-            }, room=self.lobby_code)
-            
-            # Handle AI votes
-            self.handle_ai_votes()
-    
-    def handle_ai_votes(self):
-        """Handle AI players casting votes."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return
-            
-            for ai_player in lobby.ai_players:
-                if not ai_player.is_outsider:  # Only non-outsider AIs vote
-                    # AI votes for a random human player
-                    human_players = lobby.human_players
-                    if human_players:
-                        target = random.choice(human_players)
-                        self.votes[ai_player.session_id] = target.username
-                        
-                        socketio.emit('vote_cast', {
-                            'voter': ai_player.username,
-                            'target': target.username
-                        }, room=self.lobby_code)
-    
-    def handle_vote(self, voter_sid: str, target_username: str):
-        """Handle a vote being cast."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby or lobby.state != 'voting':
-                return False
-            
-            # Find voter and target
-            voter = None
-            target = None
-            for player in lobby.active_players:
-                if player.session_id == voter_sid:
-                    voter = player
-                elif player.username == target_username:
-                    target = player
-            
-            if not voter or not target or voter.is_ai:
-                return False
-            
-            # Record vote
-            self.votes[voter_sid] = target_username
-            
-            # Broadcast vote
-            socketio.emit('vote_cast', {
-                'voter': voter.username,
-                'target': target_username
-            }, room=self.lobby_code)
-            
-            # Check if all human players have voted
-            human_players = lobby.human_players
-            human_votes = [v for k, v in self.votes.items() 
-                          if any(p.session_id == k for p in human_players)]
-            
-            if len(human_votes) >= len(human_players):
-                self.end_voting()
-            
-            return True
-    
-    def end_voting(self):
-        """End voting and determine game outcome."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if not lobby:
-                return
-            
-            # Count votes
-            vote_counts = {}
-            for target_username in self.votes.values():
-                vote_counts[target_username] = vote_counts.get(target_username, 0) + 1
-            
-            # Find most voted player
-            if vote_counts:
-                eliminated_username = max(vote_counts.keys(), key=lambda x: vote_counts[x])
-                eliminated_player = None
-                outsider_player = None
-                
-                for player in lobby.active_players:
-                    if player.username == eliminated_username:
-                        eliminated_player = player
-                    if player.is_outsider:
-                        outsider_player = player
-                
-                # Determine winner
-                if eliminated_player and eliminated_player.is_outsider:
-                    winner = 'humans'
-                    reason = 'Outsider eliminated by vote'
-                else:
-                    winner = 'ai'
-                    reason = 'Humans eliminated wrong player'
-                
-                # End game
-                end_game_session(session, lobby, winner, reason, eliminated_player)
-                
-                # Broadcast results
-                socketio.emit('game_ended', {
-                    'winner': winner,
-                    'reason': reason,
-                    'eliminated_player': eliminated_username,
-                    'outsider_was': outsider_player.username if outsider_player else 'Unknown',
-                    'vote_results': vote_counts
-                }, room=self.lobby_code)
-                
-                # Reset lobby after delay
-                socketio.start_background_task(lambda: socketio.sleep(10) or self.reset_lobby())
-    
-    def reset_lobby(self):
-        """Reset the lobby for a new game."""
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, self.lobby_code)
-            if lobby:
-                reset_lobby(session, lobby)
-                self.votes = {}
-                self.current_asker = None
-                self.current_target = None
-                self.turn_order = []
-                
-                self.broadcast_game_update("Game reset. Ready for a new round!")
-    
-    def broadcast_game_update(self, message: str, include_location: bool = True):
-        """Broadcast a game update to all players."""
-        lobby_data = self.get_lobby_data()
-        if lobby_data:
-            update_data = {
-                'message': message,
-                'lobby': lobby_data
-            }
-            
-            if include_location and lobby_data.get('location'):
-                # Send location only to non-outsider players
-                with get_db_session() as session:
-                    lobby = get_lobby_by_code(session, self.lobby_code)
-                    if lobby:
-                        for player in lobby.active_players:
-                            player_data = update_data.copy()
-                            if player.is_outsider:
-                                player_data['lobby'] = {**lobby_data, 'location': None}
-                            
-                            socketio.emit('game_update', player_data, 
-                                        room=player.session_id)
-            else:
-                socketio.emit('game_update', update_data, room=self.lobby_code)
+# Initialize game manager
+game_manager = GameManager()
 
 # Socket.IO Event Handlers
 
@@ -509,59 +57,42 @@ class GameManager:
 def handle_connect():
     """Handle client connection."""
     logger.info(f"Client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to server'})
+    emit('connected', {'message': 'Connected to server successfully'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection."""
     logger.info(f"Client disconnected: {request.sid}")
     
-    # Find and disconnect player
-    if request.sid in player_lobby_map:
-        lobby_code = player_lobby_map[request.sid]
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, lobby_code)
-            if lobby:
-                for player in lobby.players:
-                    if player.session_id == request.sid:
-                        disconnect_player(session, player)
-                        leave_room(lobby_code)
-                        
-                        # Notify other players
-                        socketio.emit('player_left', {
-                            'username': player.username,
-                            'message': f"{player.username} left the game"
-                        }, room=lobby_code)
-                        
-                        break
-        
-        # Clean up mapping
-        del player_lobby_map[request.sid]
+    # Handle player disconnection
+    success, message, lobby_code = game_manager.disconnect_player(request.sid)
+    if success and lobby_code:
+        # Notify other players in the lobby
+        lobby_data = game_manager.get_lobby_data(lobby_code)
+        if lobby_data:
+            socketio.emit('player_disconnected', {
+                'message': message,
+                'lobby': lobby_data
+            }, room=lobby_code)
 
 @socketio.on('create_lobby')
 def handle_create_lobby(data):
     """Handle lobby creation."""
     try:
         lobby_name = data.get('name', 'New Game')
-        lobby_code = data.get('code') or f"GAME{random.randint(1000, 9999)}"
+        lobby_code = data.get('code')  # Optional custom code
         
-        with get_db_session() as session:
-            # Check if lobby already exists
-            existing_lobby = get_lobby_by_code(session, lobby_code)
-            if existing_lobby:
-                emit('error', {'message': 'Lobby code already exists'})
-                return
-            
-            # Create new lobby
-            lobby = create_lobby(session, lobby_code, lobby_name)
-            active_lobbies[lobby_code] = GameManager(lobby_code)
-            
+        success, message, lobby_data = game_manager.create_lobby(lobby_name, lobby_code)
+        
+        if success:
             emit('lobby_created', {
-                'code': lobby.code,
-                'name': lobby.name
+                'success': True,
+                'lobby': lobby_data,
+                'message': message
             })
-            
-            logger.info(f"Created lobby: {lobby_code}")
+            logger.info(f"Created lobby: {lobby_data['code']}")
+        else:
+            emit('error', {'message': message})
             
     except Exception as e:
         logger.error(f"Error creating lobby: {e}")
@@ -578,57 +109,97 @@ def handle_join_lobby(data):
             emit('error', {'message': 'Missing lobby code or username'})
             return
         
-        with get_db_session() as session:
-            lobby = get_lobby_by_code(session, lobby_code)
-            if not lobby:
-                emit('error', {'message': 'Lobby not found'})
-                return
+        success, message, player_data = game_manager.join_lobby(lobby_code, request.sid, username)
+        
+        if success:
+            # Join the socket room
+            join_room(lobby_code)
             
-            # Add player to lobby
-            try:
-                player = add_player_to_lobby(session, lobby, request.sid, username)
-                
-                # Join socket room
-                join_room(lobby_code)
-                player_lobby_map[request.sid] = lobby_code
-                
-                # Initialize game manager if needed
-                if lobby_code not in active_lobbies:
-                    active_lobbies[lobby_code] = GameManager(lobby_code)
-                
-                # Send lobby data
-                lobby_data = active_lobbies[lobby_code].get_lobby_data()
-                emit('joined_lobby', lobby_data)
-                
-                # Notify other players
-                emit('player_joined', {
-                    'username': username,
-                    'message': f"{username} joined the game"
-                }, room=lobby_code, include_self=False)
-                
-                logger.info(f"Player {username} joined lobby {lobby_code}")
-                
-            except ValueError as e:
-                emit('error', {'message': str(e)})
-                
+            # Get updated lobby data
+            lobby_data = game_manager.get_lobby_data(lobby_code)
+            
+            # Send success response to player
+            emit('joined_lobby', {
+                'success': True,
+                'player': player_data,
+                'lobby': lobby_data,
+                'message': message
+            })
+            
+            # Notify other players
+            emit('player_joined', {
+                'player': player_data,
+                'lobby': lobby_data,
+                'message': f"{username} joined the game"
+            }, room=lobby_code, include_self=False)
+            
+            logger.info(f"Player {username} joined lobby {lobby_code}")
+        else:
+            emit('error', {'message': message})
+            
     except Exception as e:
         logger.error(f"Error joining lobby: {e}")
         emit('error', {'message': 'Failed to join lobby'})
+
+@socketio.on('leave_lobby')
+def handle_leave_lobby():
+    """Handle player leaving a lobby."""
+    try:
+        success, message, lobby_code = game_manager.leave_lobby(request.sid)
+        
+        if success and lobby_code:
+            # Leave the socket room
+            leave_room(lobby_code)
+            
+            # Get updated lobby data
+            lobby_data = game_manager.get_lobby_data(lobby_code)
+            
+            # Send success response
+            emit('left_lobby', {
+                'success': True,
+                'message': message
+            })
+            
+            # Notify other players
+            if lobby_data:
+                emit('player_left', {
+                    'lobby': lobby_data,
+                    'message': message
+                }, room=lobby_code)
+            
+        else:
+            emit('error', {'message': message or 'Failed to leave lobby'})
+            
+    except Exception as e:
+        logger.error(f"Error leaving lobby: {e}")
+        emit('error', {'message': 'Failed to leave lobby'})
 
 @socketio.on('start_game')
 def handle_start_game(data):
     """Handle game start request."""
     try:
         lobby_code = data.get('code')
+        if not lobby_code:
+            emit('error', {'message': 'Missing lobby code'})
+            return
         
-        if lobby_code in active_lobbies:
-            game_manager = active_lobbies[lobby_code]
-            if game_manager.start_game():
-                logger.info(f"Started game in lobby {lobby_code}")
-            else:
-                emit('error', {'message': 'Cannot start game - need at least 1 human player'})
+        success, message, game_data = game_manager.start_game(lobby_code)
+        
+        if success:
+            # Get updated lobby data
+            lobby_data = game_manager.get_lobby_data(lobby_code)
+            
+            # Notify all players that game started
+            socketio.emit('game_started', {
+                'success': True,
+                'game_data': game_data,
+                'lobby': lobby_data,
+                'message': message
+            }, room=lobby_code)
+            
+            logger.info(f"Started game in lobby {lobby_code}")
         else:
-            emit('error', {'message': 'Lobby not found'})
+            emit('error', {'message': message})
             
     except Exception as e:
         logger.error(f"Error starting game: {e}")
@@ -638,17 +209,30 @@ def handle_start_game(data):
 def handle_ask_question(data):
     """Handle question being asked."""
     try:
-        lobby_code = player_lobby_map.get(request.sid)
         target_username = data.get('target')
         question = data.get('question')
         
-        if lobby_code and lobby_code in active_lobbies:
-            game_manager = active_lobbies[lobby_code]
-            success = game_manager.handle_question(request.sid, target_username, question)
-            if not success:
-                emit('error', {'message': 'Invalid question or not your turn'})
+        if not target_username or not question:
+            emit('error', {'message': 'Missing target or question'})
+            return
+        
+        success, message, result_data = game_manager.handle_question(request.sid, target_username, question)
+        
+        if success and result_data:
+            lobby_code = result_data['lobby_code']
+            
+            # Broadcast question to all players
+            socketio.emit('question_asked', {
+                'question': result_data['question'],
+                'target': result_data['target'],
+                'message': f"Question asked: {result_data['question']}"
+            }, room=lobby_code)
+            
+            # Check if target is AI and generate response
+            # This would be handled by AI system in a background task
+            
         else:
-            emit('error', {'message': 'Game not found'})
+            emit('error', {'message': message})
             
     except Exception as e:
         logger.error(f"Error handling question: {e}")
@@ -658,16 +242,34 @@ def handle_ask_question(data):
 def handle_give_answer(data):
     """Handle answer being given."""
     try:
-        lobby_code = player_lobby_map.get(request.sid)
         answer = data.get('answer')
         
-        if lobby_code and lobby_code in active_lobbies:
-            game_manager = active_lobbies[lobby_code]
-            success = game_manager.handle_answer(request.sid, answer)
-            if not success:
-                emit('error', {'message': 'Invalid answer'})
+        if not answer:
+            emit('error', {'message': 'Missing answer'})
+            return
+        
+        success, message, result_data = game_manager.handle_answer(request.sid, answer)
+        
+        if success and result_data:
+            lobby_code = game_manager.get_player_lobby(request.sid)
+            if lobby_code:
+                # Broadcast answer to all players
+                answer_event = {
+                    'answer': result_data['answer'],
+                    'message': f"Answer given: {result_data['answer']}"
+                }
+                
+                # Check if advancing to voting or next turn
+                if result_data.get('advance_to_voting'):
+                    answer_event['advance_to_voting'] = True
+                    answer_event['voting_data'] = result_data.get('voting_data')
+                elif result_data.get('next_turn'):
+                    answer_event['next_turn'] = result_data['next_turn']
+                
+                socketio.emit('answer_given', answer_event, room=lobby_code)
+                
         else:
-            emit('error', {'message': 'Game not found'})
+            emit('error', {'message': message})
             
     except Exception as e:
         logger.error(f"Error handling answer: {e}")
@@ -677,20 +279,57 @@ def handle_give_answer(data):
 def handle_cast_vote(data):
     """Handle vote being cast."""
     try:
-        lobby_code = player_lobby_map.get(request.sid)
         target_username = data.get('target')
         
-        if lobby_code and lobby_code in active_lobbies:
-            game_manager = active_lobbies[lobby_code]
-            success = game_manager.handle_vote(request.sid, target_username)
-            if not success:
-                emit('error', {'message': 'Invalid vote'})
+        if not target_username:
+            emit('error', {'message': 'Missing vote target'})
+            return
+        
+        success, message, result_data = game_manager.handle_vote(request.sid, target_username)
+        
+        if success and result_data:
+            lobby_code = game_manager.get_player_lobby(request.sid)
+            if lobby_code:
+                vote_event = {
+                    'vote_result': result_data['vote_result'],
+                    'message': f"Vote cast for {target_username}"
+                }
+                
+                # Check if game ended
+                if result_data.get('game_result'):
+                    vote_event['game_result'] = result_data['game_result']
+                    vote_event['game_ended'] = True
+                
+                socketio.emit('vote_cast', vote_event, room=lobby_code)
+                
         else:
-            emit('error', {'message': 'Game not found'})
+            emit('error', {'message': message})
             
     except Exception as e:
         logger.error(f"Error handling vote: {e}")
         emit('error', {'message': 'Failed to cast vote'})
+
+@socketio.on('get_lobby_data')
+def handle_get_lobby_data(data):
+    """Handle request for lobby data."""
+    try:
+        lobby_code = data.get('code')
+        if not lobby_code:
+            emit('error', {'message': 'Missing lobby code'})
+            return
+        
+        lobby_data = game_manager.get_lobby_data(lobby_code)
+        
+        if lobby_data:
+            emit('lobby_data', {
+                'lobby': lobby_data
+            })
+        else:
+            emit('error', {'message': 'Lobby not found'})
+            
+    except Exception as e:
+        logger.error(f"Error getting lobby data: {e}")
+        emit('error', {'message': 'Failed to get lobby data'})
 
 # Flask API Routes
 
@@ -698,7 +337,7 @@ def handle_cast_vote(data):
 def health_check():
     """Health check endpoint."""
     return jsonify({
-        'status': 'healthy', 
+        'status': 'healthy',
         'message': 'The Outsider game server is running',
         'version': '2.0.0'
     })
@@ -727,19 +366,8 @@ def get_stats():
 def get_active_lobbies():
     """Get list of active lobbies."""
     try:
-        lobbies_info = []
-        for code, manager in active_lobbies.items():
-            lobby_data = manager.get_lobby_data()
-            if lobby_data:
-                lobbies_info.append({
-                    'code': lobby_data['code'],
-                    'name': lobby_data['name'],
-                    'state': lobby_data['state'],
-                    'players': lobby_data['total_players'],
-                    'max_players': 8  # Default max
-                })
-        
-        return jsonify({'lobbies': lobbies_info})
+        lobbies = game_manager.get_active_lobbies()
+        return jsonify({'lobbies': lobbies})
     except Exception as e:
         logger.error(f"Error getting active lobbies: {e}")
         return jsonify({'error': 'Failed to get lobbies'}), 500
@@ -748,22 +376,10 @@ def get_active_lobbies():
 def cleanup_inactive():
     """Clean up inactive lobbies (admin endpoint)."""
     try:
-        with get_db_session() as session:
-            cleaned_count = cleanup_inactive_lobbies(session)
-            
-            # Also clean up in-memory state
-            inactive_codes = []
-            for code, manager in active_lobbies.items():
-                if not manager.get_lobby_data():
-                    inactive_codes.append(code)
-            
-            for code in inactive_codes:
-                del active_lobbies[code]
-            
-            return jsonify({
-                'message': f'Cleaned up {cleaned_count} inactive lobbies',
-                'memory_cleanup': len(inactive_codes)
-            })
+        cleaned_count = game_manager.cleanup_inactive_lobbies()
+        return jsonify({
+            'message': f'Cleaned up {cleaned_count} inactive lobbies'
+        })
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
         return jsonify({'error': 'Cleanup failed'}), 500
@@ -771,10 +387,12 @@ def cleanup_inactive():
 # Error handlers
 @app.errorhandler(404)
 def not_found(error):
+    """Handle 404 errors."""
     return jsonify({'error': 'Not found'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
+    """Handle 500 errors."""
     return jsonify({'error': 'Internal server error'}), 500
 
 # Application initialization
@@ -786,10 +404,12 @@ def create_app():
     logger.info("Database initialized")
     
     # Clean up old lobbies on startup
-    with get_db_session() as session:
-        cleaned = cleanup_inactive_lobbies(session, hours_inactive=6)
+    try:
+        cleaned = game_manager.cleanup_inactive_lobbies()
         if cleaned > 0:
             logger.info(f"Cleaned up {cleaned} inactive lobbies on startup")
+    except Exception as e:
+        logger.warning(f"Failed to clean up lobbies on startup: {e}")
     
     return app
 
