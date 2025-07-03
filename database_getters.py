@@ -6,7 +6,7 @@ is contained within this module - other modules should never handle sessions dir
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 
 from database import get_db_session, Lobby, Player, GameMessage, Vote, GameSession, GameStatistics
@@ -16,6 +16,83 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 # UNIVERSAL GETTERS - ALL READ OPERATIONS
 # ==============================================================================
+
+def get_player(lobby_id: Optional[int] = None, 
+               player_id: Optional[int] = None,
+               session_id: Optional[str] = None,
+               username: Optional[str] = None,
+               is_ai: Optional[bool] = None,
+               is_connected: Optional[bool] = True,
+               is_spectator: Optional[bool] = None) -> Optional[Player]:
+    """
+    Universal player getter that can search by any combination of criteria.
+    
+    Args:
+        lobby_id: Filter by lobby ID
+        player_id: Filter by player ID
+        session_id: Filter by session ID
+        username: Filter by username
+        is_ai: Filter by AI status (True for AI players/outsiders, False for humans)
+        is_connected: Filter by connection status (defaults to True)
+        is_spectator: Filter by spectator status
+    
+    Returns:
+        First matching player or None
+    """
+    with get_db_session() as session:
+        query = session.query(Player)
+        
+        if player_id is not None:
+            query = query.filter(Player.id == player_id)
+        if lobby_id is not None:
+            query = query.filter(Player.lobby_id == lobby_id)
+        if session_id is not None:
+            query = query.filter(Player.session_id == session_id)
+        if username is not None:
+            query = query.filter(Player.username == username)
+        if is_ai is not None:
+            query = query.filter(Player.is_ai == is_ai)
+        if is_connected is not None:
+            query = query.filter(Player.is_connected == is_connected)
+        if is_spectator is not None:
+            query = query.filter(Player.is_spectator == is_spectator)
+            
+        return query.first()
+
+def get_players(lobby_id: Optional[int] = None,
+                is_ai: Optional[bool] = None,
+                is_connected: Optional[bool] = True,
+                is_spectator: Optional[bool] = None,
+                limit: Optional[int] = None) -> List[Player]:
+    """
+    Universal players getter that can search by any combination of criteria.
+    
+    Args:
+        lobby_id: Filter by lobby ID
+        is_ai: Filter by AI status (True for AI players/outsiders, False for humans)
+        is_connected: Filter by connection status (defaults to True)
+        is_spectator: Filter by spectator status
+        limit: Maximum number of results
+    
+    Returns:
+        List of matching players
+    """
+    with get_db_session() as session:
+        query = session.query(Player)
+        
+        if lobby_id is not None:
+            query = query.filter(Player.lobby_id == lobby_id)
+        if is_ai is not None:
+            query = query.filter(Player.is_ai == is_ai)
+        if is_connected is not None:
+            query = query.filter(Player.is_connected == is_connected)
+        if is_spectator is not None:
+            query = query.filter(Player.is_spectator == is_spectator)
+            
+        if limit is not None:
+            query = query.limit(limit)
+            
+        return query.all()
 
 def get_lobby_by_code(code: str) -> Optional[Lobby]:
     """Get a lobby by its code."""
@@ -29,22 +106,15 @@ def get_lobby_by_id(lobby_id: int) -> Optional[Lobby]:
 
 def get_player_by_session_id(session_id: str) -> Optional[Player]:
     """Get a player by their session ID."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(session_id=session_id, is_connected=True).first()
+    return get_player(session_id=session_id, is_connected=True)
 
 def get_player_by_id(player_id: int) -> Optional[Player]:
     """Get a player by their ID."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(id=player_id).first()
+    return get_player(player_id=player_id)
 
 def get_player_by_username(lobby_id: int, username: str) -> Optional[Player]:
     """Get a player by username in a specific lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            username=username,
-            is_connected=True
-        ).first()
+    return get_player(lobby_id=lobby_id, username=username, is_connected=True)
 
 def get_active_lobbies() -> List[Lobby]:
     """Get all active lobbies."""
@@ -79,57 +149,23 @@ def get_latest_game_session(lobby_id: int) -> Optional[GameSession]:
 
 def get_player_count_in_lobby(lobby_id: int) -> int:
     """Get the number of active players in a lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_connected=True,
-            is_spectator=False
-        ).count()
+    return len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
 
 def get_ai_players_in_lobby(lobby_id: int) -> List[Player]:
-    """Get all AI players in a lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_ai=True,
-            is_connected=True
-        ).all()
+    """Get all AI players (outsiders) in a lobby."""
+    return get_players(lobby_id=lobby_id, is_ai=True, is_connected=True)
 
 def get_human_players_in_lobby(lobby_id: int) -> List[Player]:
     """Get all human players in a lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_ai=False,
-            is_connected=True,
-            is_spectator=False
-        ).all()
+    return get_players(lobby_id=lobby_id, is_ai=False, is_connected=True, is_spectator=False)
 
 def get_all_players_in_lobby(lobby_id: int) -> List[Player]:
     """Get all connected players in a lobby (both human and AI)."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_connected=True
-        ).all()
+    return get_players(lobby_id=lobby_id, is_connected=True)
 
 def get_active_players_in_lobby(lobby_id: int) -> List[Player]:
     """Get all active (non-spectator) players in a lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_connected=True,
-            is_spectator=False
-        ).all()
-
-def get_outsider_player(lobby_id: int) -> Optional[Player]:
-    """Get the outsider player in a lobby."""
-    with get_db_session() as session:
-        return session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_outsider=True,
-            is_connected=True
-        ).first()
+    return get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False)
 
 def get_lobby_messages(lobby_id: int, limit: int = 50) -> List[GameMessage]:
     """Get recent messages from a lobby."""
@@ -170,14 +206,10 @@ def get_game_sessions_for_lobby(lobby_id: int) -> List[GameSession]:
 
 def get_lobby_by_player_session(session_id: str) -> Optional[Lobby]:
     """Get lobby that a player session is connected to."""
-    with get_db_session() as session:
-        player = session.query(Player).filter_by(
-            session_id=session_id,
-            is_connected=True
-        ).first()
-        if player:
-            return session.query(Lobby).filter_by(id=player.lobby_id).first()
-        return None
+    player = get_player(session_id=session_id, is_connected=True)
+    if player:
+        return get_lobby_by_id(player.lobby_id)
+    return None
 
 def is_username_taken(lobby_id: int, username: str, exclude_player_id: Optional[int] = None) -> bool:
     """Check if a username is already taken in a lobby."""
@@ -205,11 +237,7 @@ def get_lobby_capacity_info(lobby_id: int) -> dict:
         if not lobby:
             return {}
         
-        player_count = session.query(Player).filter_by(
-            lobby_id=lobby_id,
-            is_connected=True,
-            is_spectator=False
-        ).count()
+        player_count = len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
         
         return {
             'current_players': player_count,

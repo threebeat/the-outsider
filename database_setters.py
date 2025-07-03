@@ -66,15 +66,7 @@ def update_player_connection(player_id: int, connected: bool):
             player.update_last_seen()
             logger.info(f"Updated player {player.username} connection: {connected}")
 
-def set_player_as_outsider(player_id: int):
-    """Mark a player as the outsider."""
-    with get_db_session() as session:
-        player = session.query(Player).filter_by(id=player_id).first()
-        if player:
-            player.is_outsider = True
-            if player.lobby:
-                player.lobby.outsider_player_id = player.id
-            logger.info(f"Set player {player.username} as outsider")
+# Outsider functionality removed - AI players are automatically outsiders
 
 def create_game_session(lobby_id: int, location: str) -> GameSession:
     """Create a new game session."""
@@ -242,7 +234,7 @@ def end_game_session(lobby_id: int, winner: str, winner_reason: str,
                 current_session.eliminated_player_id = eliminated_player_id
                 eliminated_player = session.query(Player).filter_by(id=eliminated_player_id).first()
                 if eliminated_player:
-                    current_session.outsider_eliminated = eliminated_player.is_outsider
+                    current_session.ai_eliminated = eliminated_player.is_ai
             
             # Calculate duration
             if current_session.started_at:
@@ -267,7 +259,6 @@ def reset_lobby_for_new_game(lobby_id: int):
             lobby.location = None
             lobby.current_turn = 0
             lobby.question_count = 0
-            lobby.outsider_player_id = None
             lobby.started_at = None
             lobby.ended_at = None
             lobby.update_activity()
@@ -275,7 +266,6 @@ def reset_lobby_for_new_game(lobby_id: int):
             # Reset player states
             for player in lobby.players:
                 if player.is_connected:
-                    player.is_outsider = False
                     player.questions_asked = 0
                     player.questions_answered = 0
                     player.votes_received = 0

@@ -101,7 +101,6 @@ class Lobby(Base):
     
     # AI Integration
     ai_difficulty = Column(String(20), default='normal')  # easy, normal, hard
-    outsider_player_id = Column(Integer, ForeignKey('players.id'), nullable=True)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -110,11 +109,10 @@ class Lobby(Base):
     last_activity = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    players = relationship('Player', back_populates='lobby', cascade='all, delete-orphan', foreign_keys='Player.lobby_id')
+    players = relationship('Player', back_populates='lobby', cascade='all, delete-orphan')
     messages = relationship('GameMessage', back_populates='lobby', cascade='all, delete-orphan')
     votes = relationship('Vote', back_populates='lobby', cascade='all, delete-orphan')
     sessions = relationship('GameSession', back_populates='lobby', cascade='all, delete-orphan')
-    outsider = relationship('Player', foreign_keys=[outsider_player_id], post_update=True)
     
     # Indexes
     __table_args__ = (
@@ -141,7 +139,7 @@ class Lobby(Base):
     
     @property
     def ai_players(self) -> List['Player']:
-        """Get all AI players."""
+        """Get all AI players (who are automatically outsiders)."""
         return [p for p in self.active_players if p.is_ai]
 
 class Player(Base):
@@ -154,10 +152,9 @@ class Player(Base):
     username = Column(String(50), nullable=False)
     
     # Player type and status
-    is_ai = Column(Boolean, default=False, nullable=False)
+    is_ai = Column(Boolean, default=False, nullable=False)  # AI players are automatically outsiders
     is_spectator = Column(Boolean, default=False, nullable=False)
     is_connected = Column(Boolean, default=True, nullable=False)
-    is_outsider = Column(Boolean, default=False, nullable=False)
     
     # Game statistics
     questions_asked = Column(Integer, default=0)
@@ -176,7 +173,7 @@ class Player(Base):
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
     
     # Relationships
-    lobby = relationship('Lobby', back_populates='players', foreign_keys=[lobby_id])
+    lobby = relationship('Lobby', back_populates='players')
     sent_messages = relationship('GameMessage', foreign_keys='GameMessage.sender_id', back_populates='sender')
     received_messages = relationship('GameMessage', foreign_keys='GameMessage.target_id', back_populates='target')
     votes_cast = relationship('Vote', foreign_keys='Vote.voter_id', back_populates='voter')
@@ -187,6 +184,7 @@ class Player(Base):
         Index('idx_player_lobby_session', 'lobby_id', 'session_id'),
         Index('idx_player_lobby_username', 'lobby_id', 'username'),
         Index('idx_player_connected', 'is_connected', 'last_seen'),
+        Index('idx_player_ai', 'is_ai', 'lobby_id'),
     )
     
     def __repr__(self):
@@ -283,7 +281,7 @@ class GameSession(Base):
     # Game results
     winner = Column(String(20), nullable=True)  # 'humans', 'ai', 'draw'
     winner_reason = Column(String(100), nullable=True)
-    outsider_eliminated = Column(Boolean, nullable=True)
+    ai_eliminated = Column(Boolean, nullable=True)  # Was an AI player eliminated
     ai_guessed_correctly = Column(Boolean, nullable=True)
     ai_final_guess = Column(String(100), nullable=True)
     
