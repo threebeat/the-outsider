@@ -25,11 +25,8 @@ class Lobby(Base):
     state = Column(String(20), default='open')  # open, active (destroyed after game ends)
     location = Column(String(100), nullable=True)  # Current game location
     
-    # Timestamps
+    # Timestamp - when lobby was created/started
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    ended_at = Column(DateTime(timezone=True), nullable=True)
-    last_activity = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     players = relationship('Player', back_populates='lobby', cascade='all, delete-orphan')
@@ -39,16 +36,11 @@ class Lobby(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_lobby_state_activity', 'state', 'last_activity'),
         Index('idx_lobby_code_state', 'code', 'state'),
     )
     
     def __repr__(self):
         return f"<Lobby(code='{self.code}', state='{self.state}')>"
-    
-    def update_activity(self):
-        """Update the last activity timestamp."""
-        self.last_activity = datetime.now(timezone.utc)
 
 class Player(Base):
     """Represents a player in the game."""
@@ -73,10 +65,6 @@ class Player(Base):
     ai_personality = Column(String(50), nullable=True)  # aggressive, cautious, analytical, etc.
     ai_strategy = Column(Text, nullable=True)  # JSON string for AI strategy data
     
-    # Timestamps
-    joined_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    last_seen = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
     # Foreign key
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
     
@@ -85,22 +73,17 @@ class Player(Base):
     sent_messages = relationship('GameMessage', foreign_keys='GameMessage.sender_id', back_populates='sender')
     received_messages = relationship('GameMessage', foreign_keys='GameMessage.target_id', back_populates='target')
     votes_cast = relationship('Vote', foreign_keys='Vote.voter_id', back_populates='voter')
-    votes_against = relationship('Vote', foreign_keys='Vote.target_id', back_populates='target')
+    votes_against = relationship('Vote', foreign_keys='Vote.target_id', back_populates='votes_against')
     
     # Indexes
     __table_args__ = (
         Index('idx_player_lobby_session', 'lobby_id', 'session_id'),
         Index('idx_player_lobby_username', 'lobby_id', 'username'),
-        Index('idx_player_connected', 'is_connected', 'last_seen'),
         Index('idx_player_ai', 'is_ai', 'lobby_id'),
     )
     
     def __repr__(self):
         return f"<Player(username='{self.username}', is_ai={self.is_ai})>"
-    
-    def update_last_seen(self):
-        """Update the last seen timestamp."""
-        self.last_seen = datetime.now(timezone.utc)
 
 class GameMessage(Base):
     """Represents messages exchanged during the game."""
@@ -110,9 +93,6 @@ class GameMessage(Base):
     id = Column(Integer, primary_key=True)
     content = Column(Text, nullable=False)
     message_type = Column(String(20), default='chat')  # chat, question, answer, system, ai_thinking
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Foreign keys
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
@@ -131,7 +111,6 @@ class GameMessage(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_message_lobby_created', 'lobby_id', 'created_at'),
         Index('idx_message_type_lobby', 'message_type', 'lobby_id'),
     )
     
@@ -144,9 +123,6 @@ class Vote(Base):
     __tablename__ = 'votes'
     
     id = Column(Integer, primary_key=True)
-    
-    # Timestamps
-    cast_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Foreign keys
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
@@ -166,7 +142,6 @@ class Vote(Base):
     # Indexes
     __table_args__ = (
         Index('idx_vote_lobby_round', 'lobby_id', 'vote_round'),
-        Index('idx_vote_cast_at', 'cast_at'),
     )
     
     def __repr__(self):
@@ -202,9 +177,8 @@ class GameSession(Base):
     ai_performance_score = Column(Float, nullable=True)  # How well AI performed
     human_suspicion_level = Column(Float, nullable=True)  # How suspicious humans were
     
-    # Timestamps
+    # Timestamp - when game was started
     started_at = Column(DateTime(timezone=True), nullable=False)
-    ended_at = Column(DateTime(timezone=True), nullable=True)
     
     # Foreign key
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
@@ -217,7 +191,6 @@ class GameSession(Base):
     # Indexes
     __table_args__ = (
         Index('idx_session_lobby_started', 'lobby_id', 'started_at'),
-        Index('idx_session_winner_ended', 'winner', 'ended_at'),
     )
     
     def __repr__(self):
@@ -231,29 +204,10 @@ class GameStatistics(Base):
     id = Column(Integer, primary_key=True)
     lobby_code = Column(String(50), default='main', index=True)
     
-    # Win counters
+    # Win counters - simple tracking only
     human_wins = Column(Integer, default=0)
     ai_wins = Column(Integer, default=0)
     total_games = Column(Integer, default=0)
     
-    # Performance metrics
-    avg_game_duration = Column(Float, nullable=True)  # Average duration in seconds
-    avg_questions_per_game = Column(Float, nullable=True)
-    human_win_rate = Column(Float, nullable=True)  # Percentage
-    avg_players_per_game = Column(Float, nullable=True)
-    
-    # Advanced analytics
-    most_popular_locations = Column(Text, nullable=True)  # JSON array
-    
-    # Timestamps
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
     def __repr__(self):
         return f"<GameStatistics(human_wins={self.human_wins}, ai_wins={self.ai_wins})>"
-    
-    def update_stats(self):
-        """Recalculate derived statistics."""
-        if self.total_games > 0:
-            self.human_win_rate = (self.human_wins / self.total_games) * 100
-        self.last_updated = datetime.now(timezone.utc)
