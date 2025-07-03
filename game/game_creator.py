@@ -10,11 +10,9 @@ import logging
 from typing import Optional, Tuple, List, Dict, Any
 from datetime import datetime
 
-from database import (
-    get_db_session, get_lobby_by_id, get_ai_players_in_lobby,
-    get_human_players_in_lobby, create_player, set_player_as_outsider,
-    create_game_session, update_lobby_state, Player
-)
+from database import Player
+from database_getters import get_lobby_by_id, get_ai_players_in_lobby, get_human_players_in_lobby
+from database_setters import create_player, set_player_as_outsider, create_game_session, update_lobby_state, update_player_ai_strategy
 from utils.constants import LOCATIONS, AI_NAMES, AI_PERSONALITIES
 
 logger = logging.getLogger(__name__)
@@ -33,13 +31,12 @@ class GameCreator:
         self.max_ai_players = 3
         logger.debug("Game creator initialized")
     
-    def create_game_with_ai(self, session, lobby_id: int, 
+    def create_game_with_ai(self, lobby_id: int, 
                            requested_ai_count: Optional[int] = None) -> Tuple[bool, str]:
         """
         Create a game with AI players.
         
         Args:
-            session: Database session
             lobby_id: ID of the lobby to create game in
             requested_ai_count: Optional specific number of AI players (1-3)
             
@@ -48,7 +45,7 @@ class GameCreator:
         """
         try:
             # Get lobby
-            lobby = get_lobby_by_id(session, lobby_id)
+            lobby = get_lobby_by_id(lobby_id)
             if not lobby:
                 return False, "Lobby not found"
             
@@ -60,8 +57,8 @@ class GameCreator:
                 ai_count = random.randint(self.min_ai_players, self.max_ai_players)
             
             # Check if we can add AI players
-            current_ai = len(get_ai_players_in_lobby(session, lobby_id))
-            current_humans = len(get_human_players_in_lobby(session, lobby_id))
+            current_ai = len(get_ai_players_in_lobby(lobby_id))
+            current_humans = len(get_human_players_in_lobby(lobby_id))
             total_players = current_ai + current_humans
             
             if total_players + ai_count > lobby.max_players:
@@ -71,13 +68,13 @@ class GameCreator:
                     return False, "Lobby is full, cannot add AI players"
             
             # Add AI players
-            added_players = self._add_ai_players_to_lobby(session, lobby_id, ai_count)
+            added_players = self._add_ai_players_to_lobby(lobby_id, ai_count)
             
             if not added_players:
                 return False, "Failed to add AI players"
             
             # Select the outsider (always an AI)
-            outsider = self._select_outsider(session, lobby_id, added_players)
+            outsider = self._select_outsider(lobby_id, added_players)
             
             if outsider:
                 logger.info(f"Created game in lobby {lobby_id} with {len(added_players)} AI players. Outsider: {outsider.username}")
@@ -90,29 +87,28 @@ class GameCreator:
             logger.error(f"Error creating game with AI: {e}")
             return False, f"Failed to create game: {str(e)}"
     
-    def prepare_game_start(self, session, lobby_id: int) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    def prepare_game_start(self, lobby_id: int) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Prepare a game for starting by ensuring AI players and selecting location.
         
         Args:
-            session: Database session
             lobby_id: ID of the lobby
             
         Returns:
             tuple: (success, message, game_data)
         """
         try:
-            lobby = get_lobby_by_id(session, lobby_id)
+            lobby = get_lobby_by_id(lobby_id)
             if not lobby:
                 return False, "Lobby not found", None
             
             # Check if we need to add AI players
-            ai_players = get_ai_players_in_lobby(session, lobby_id)
+            ai_players = get_ai_players_in_lobby(lobby_id)
             if len(ai_players) < self.min_ai_players:
                 # Add AI players to meet minimum
                 needed = self.min_ai_players - len(ai_players)
-                self._add_ai_players_to_lobby(session, lobby_id, needed)
-                ai_players = get_ai_players_in_lobby(session, lobby_id)
+                self._add_ai_players_to_lobby(lobby_id, needed)
+                ai_players = get_ai_players_in_lobby(lobby_id)
             
             # Ensure we have an outsider
             outsider = None
@@ -124,13 +120,13 @@ class GameCreator:
             if not outsider and ai_players:
                 # Select first AI as outsider
                 outsider = ai_players[0]
-                set_player_as_outsider(session, outsider)
+                set_player_as_outsider(outsider.id)
             
             # Select random location
             location = random.choice(LOCATIONS)
             
             # Create game session
-            game_session = create_game_session(session, lobby, location)
+            game_session = create_game_session(lobby_id, location)
             
             game_data = {
                 'game_session_id': game_session.id,
@@ -147,12 +143,11 @@ class GameCreator:
             logger.error(f"Error preparing game start: {e}")
             return False, f"Failed to prepare game: {str(e)}", None
     
-    def _add_ai_players_to_lobby(self, session, lobby_id: int, count: int) -> List[Any]:
+    def _add_ai_players_to_lobby(self, lobby_id: int, count: int) -> List[Any]:
         """
         Add AI players to a lobby.
         
         Args:
-            session: Database session
             lobby_id: ID of the lobby
             count: Number of AI players to add
             
@@ -163,7 +158,9 @@ class GameCreator:
         
         try:
             # Get existing player names to avoid duplicates
-            lobby = get_lobby_by_id(session, lobby_id)
+            lobby = get_lobby_by_id(lobby_id)
+            if not lobby:
+                return added_players
             existing_names = [p.username for p in lobby.players if p.is_connected]
             
             # Get available AI names
@@ -185,7 +182,6 @@ class GameCreator:
                 
                 # Create AI player
                 ai_player = create_player(
-                    session=session,
                     lobby_id=lobby_id,
                     session_id=ai_session_id,
                     username=ai_name,
@@ -202,13 +198,12 @@ class GameCreator:
             logger.error(f"Error adding AI players: {e}")
             return added_players
     
-    def _select_outsider(self, session, lobby_id: int, 
+    def _select_outsider(self, lobby_id: int, 
                         prefer_from: Optional[List[Any]] = None) -> Optional[Any]:
         """
         Select an AI player to be the outsider.
         
         Args:
-            session: Database session
             lobby_id: ID of the lobby
             prefer_from: Optional list of players to prefer selecting from
             
@@ -220,7 +215,7 @@ class GameCreator:
             if prefer_from:
                 ai_players = prefer_from
             else:
-                ai_players = get_ai_players_in_lobby(session, lobby_id)
+                ai_players = get_ai_players_in_lobby(lobby_id)
             
             if not ai_players:
                 logger.warning(f"No AI players available to be outsider in lobby {lobby_id}")
@@ -234,7 +229,7 @@ class GameCreator:
             
             # Randomly select one AI to be the outsider
             outsider = random.choice(ai_players)
-            set_player_as_outsider(session, outsider)
+            set_player_as_outsider(outsider.id)
             
             logger.info(f"Selected AI player '{outsider.username}' as the outsider")
             return outsider
@@ -243,24 +238,19 @@ class GameCreator:
             logger.error(f"Error selecting outsider: {e}")
             return None
     
-    def update_ai_strategy(self, session, player_id: int, strategy_data: Dict[str, Any]):
+    def update_ai_strategy(self, player_id: int, strategy_data: Dict[str, Any]):
         """
         Update AI player's strategy data.
         
         Args:
-            session: Database session
             player_id: ID of the AI player
             strategy_data: Strategy information to store
         """
         try:
             import json
-            
-            player = session.query(Player).filter_by(id=player_id, is_ai=True).first()
-            if player:
-                player.ai_strategy = json.dumps(strategy_data)
-                logger.debug(f"Updated strategy for AI player '{player.username}'")
-            else:
-                logger.warning(f"AI player {player_id} not found")
+            strategy_json = json.dumps(strategy_data)
+            update_player_ai_strategy(player_id, strategy_json)
+            logger.debug(f"Updated strategy for AI player {player_id}")
                 
         except Exception as e:
             logger.error(f"Error updating AI strategy: {e}")
@@ -276,24 +266,23 @@ class GameCreator:
             AI configuration dictionary
         """
         try:
-            with get_db_session() as session:
-                ai_players = get_ai_players_in_lobby(session, lobby_id)
-                
-                config = {
-                    'ai_count': len(ai_players),
-                    'min_ai_players': self.min_ai_players,
-                    'max_ai_players': self.max_ai_players,
-                    'ai_players': []
-                }
-                
-                for player in ai_players:
-                    config['ai_players'].append({
-                        'username': player.username,
-                        'personality': player.ai_personality,
-                        'is_outsider': player.is_outsider
-                    })
-                
-                return config
+            ai_players = get_ai_players_in_lobby(lobby_id)
+            
+            config = {
+                'ai_count': len(ai_players),
+                'min_ai_players': self.min_ai_players,
+                'max_ai_players': self.max_ai_players,
+                'ai_players': []
+            }
+            
+            for player in ai_players:
+                config['ai_players'].append({
+                    'username': player.username,
+                    'personality': player.ai_personality,
+                    'is_outsider': player.is_outsider
+                })
+            
+            return config
                 
         except Exception as e:
             logger.error(f"Error getting AI configuration: {e}")
@@ -302,36 +291,35 @@ class GameCreator:
                 'error': str(e)
             }
     
-    def validate_game_ready(self, session, lobby_id: int) -> Tuple[bool, str]:
+    def validate_game_ready(self, lobby_id: int) -> Tuple[bool, str]:
         """
         Validate if a game is ready to start.
         
         Args:
-            session: Database session
             lobby_id: ID of the lobby
             
         Returns:
             tuple: (is_ready, message)
         """
         try:
-            lobby = get_lobby_by_id(session, lobby_id)
+            lobby = get_lobby_by_id(lobby_id)
             if not lobby:
                 return False, "Lobby not found"
             
             # Check player counts
-            ai_count = len(get_ai_players_in_lobby(session, lobby_id))
-            human_count = len(get_human_players_in_lobby(session, lobby_id))
+            ai_count = len(get_ai_players_in_lobby(lobby_id))
+            human_count = len(get_human_players_in_lobby(lobby_id))
             total_count = ai_count + human_count
             
-            if total_count < lobby.min_players:
-                return False, f"Need at least {lobby.min_players} players (have {total_count})"
+            if total_count < 3:  # min_players not available on lobby model
+                return False, f"Need at least 3 players (have {total_count})"
             
             if ai_count < self.min_ai_players:
                 return False, f"Need at least {self.min_ai_players} AI players (have {ai_count})"
             
             # Check for outsider
             has_outsider = False
-            for player in get_ai_players_in_lobby(session, lobby_id):
+            for player in get_ai_players_in_lobby(lobby_id):
                 if player.is_outsider:
                     has_outsider = True
                     break

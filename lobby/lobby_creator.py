@@ -415,30 +415,28 @@ class LobbyCreator:
             })
             
             # Import database functions to create the lobby
-            from database import get_db_session, create_lobby
+            from database_setters import create_lobby
             
-            with get_db_session() as session:
-                # Create the lobby in database
-                lobby = create_lobby(session, lobby_code, lobby_name, config.max_players)
-                
-                # Import game creator to initialize the game with AI players
-                from game.game_creator import GameCreator
-                game_creator = GameCreator()
-                
-                # Create initial game with AI players
-                ai_count = min(3, config.max_ai_players)  # 1-3 AI players
-                success, message = game_creator.create_game_with_ai(
-                    session, 
-                    lobby.id, 
-                    ai_count
-                )
-                
-                if success:
-                    logger.info(f"Created default lobby '{lobby_name}' with code '{lobby_code}' and {ai_count} AI players")
-                    return True, f"Default lobby created successfully with {ai_count} AI players", config
-                else:
-                    logger.warning(f"Created default lobby but failed to add AI players: {message}")
-                    return True, "Default lobby created (without AI players)", config
+            # Create the lobby in database
+            lobby = create_lobby(lobby_code, lobby_name, config.max_players)
+            
+            # Import game creator to initialize the game with AI players
+            from game.game_creator import GameCreator
+            game_creator = GameCreator()
+            
+            # Create initial game with AI players
+            ai_count = min(3, config.max_ai_players)  # 1-3 AI players
+            success, message = game_creator.create_game_with_ai(
+                lobby.id, 
+                ai_count
+            )
+            
+            if success:
+                logger.info(f"Created default lobby '{lobby_name}' with code '{lobby_code}' and {ai_count} AI players")
+                return True, f"Default lobby created successfully with {ai_count} AI players", config
+            else:
+                logger.warning(f"Created default lobby but failed to add AI players: {message}")
+                return True, "Default lobby created (without AI players)", config
                     
         except ImportError as e:
             logger.error(f"Import error creating default lobby: {e}")
@@ -480,40 +478,38 @@ class LobbyCreator:
             config = self.create_lobby_config(custom_settings)
             
             # Import database functions
-            from database import get_db_session, create_lobby as db_create_lobby
+            from database_setters import create_lobby as db_create_lobby
             
-            with get_db_session() as session:
-                # Create lobby in database
-                lobby = db_create_lobby(session, lobby_code, name, config.max_players)
-                
-                # Import game creator to populate AI players
-                from game.game_creator import GameCreator
-                game_creator = GameCreator()
-                
-                # Determine AI count (1-3 players)
-                ai_count = random.randint(1, min(3, config.max_ai_players))
-                
-                # Create game with AI players
-                success, ai_message = game_creator.create_game_with_ai(
-                    session,
-                    lobby.id,
-                    ai_count
-                )
-                
-                if not success:
-                    logger.warning(f"Failed to add AI players to lobby {lobby_code}: {ai_message}")
-                
-                # Prepare lobby data for response
-                lobby_data = self.create_lobby_data(name, creator_username, lobby_code, config)
-                lobby_data['id'] = lobby.id
-                lobby_data['ai_player_count'] = ai_count if success else 0
-                
-                message = f"Lobby '{name}' created with code '{lobby_code}'"
-                if success:
-                    message += f" and {ai_count} AI players"
-                
-                logger.info(message)
-                return True, message, lobby_data
+            # Create lobby in database
+            lobby = db_create_lobby(lobby_code, name, config.max_players)
+            
+            # Import game creator to populate AI players
+            from game.game_creator import GameCreator
+            game_creator = GameCreator()
+            
+            # Determine AI count (1-3 players)
+            ai_count = random.randint(1, min(3, config.max_ai_players))
+            
+            # Create game with AI players
+            success, ai_message = game_creator.create_game_with_ai(
+                lobby.id,
+                ai_count
+            )
+            
+            if not success:
+                logger.warning(f"Failed to add AI players to lobby {lobby_code}: {ai_message}")
+            
+            # Prepare lobby data for response
+            lobby_data = self.create_lobby_data(name, creator_username, lobby_code, config)
+            lobby_data['id'] = lobby.id
+            lobby_data['ai_player_count'] = ai_count if success else 0
+            
+            message = f"Lobby '{name}' created with code '{lobby_code}'"
+            if success:
+                message += f" and {ai_count} AI players"
+            
+            logger.info(message)
+            return True, message, lobby_data
                 
         except ImportError as e:
             logger.error(f"Import error creating lobby: {e}")
