@@ -3,6 +3,7 @@ Lobby Creator for The Outsider.
 
 Handles lobby creation, validation, and code generation.
 Contains no game logic or player management - purely lobby creation.
+Uses Redis cache only, never touches database.
 """
 
 import random
@@ -11,6 +12,12 @@ import logging
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
+
+# Import cache operations only
+from cache import (
+    create_lobby, lobby_exists, get_lobby_by_code,
+    LobbyCache, PlayerCache
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,7 @@ class LobbyCreator:
     
     Manages lobby code generation, validation, and basic lobby setup.
     Contains no player management or game logic.
+    Uses Redis cache only.
     """
     
     def __init__(self, code_length: int = 6):
@@ -73,7 +81,7 @@ class LobbyCreator:
             
             while attempts < max_attempts:
                 code = self._generate_random_code()
-                if code not in self.used_codes:
+                if code not in self.used_codes and not lobby_exists(code):
                     self.used_codes.add(code)
                     logger.debug(f"Generated lobby code: {code}")
                     return code
@@ -211,8 +219,8 @@ class LobbyCreator:
             if not code.isalnum():
                 return False, "Lobby code must contain only letters and numbers"
             
-            # Check if code is already in use
-            if code in self.used_codes:
+            # Check if code is already in use (check cache)
+            if code in self.used_codes or lobby_exists(code):
                 return False, "Lobby code is already in use"
             
             return True, "Lobby code is valid"
@@ -253,7 +261,7 @@ class LobbyCreator:
             True if available, False if in use
         """
         try:
-            return code.upper() not in self.used_codes
+            return code.upper() not in self.used_codes and not lobby_exists(code.upper())
         except Exception as e:
             logger.error(f"Error checking code availability: {e}")
             return False
@@ -290,54 +298,6 @@ class LobbyCreator:
         except Exception as e:
             logger.error(f"Error validating custom code: {e}")
             return None
-    
-    def create_lobby_data(self, 
-                         name: str, 
-                         creator_username: str,
-                         lobby_code: str,
-                         config: LobbyConfiguration) -> Dict[str, Any]:
-        """
-        Create initial lobby data structure.
-        
-        Args:
-            name: Lobby name
-            creator_username: Username of lobby creator
-            lobby_code: Generated lobby code
-            config: Lobby configuration
-            
-        Returns:
-            Initial lobby data dictionary
-        """
-        try:
-            lobby_data = {
-                'code': lobby_code,
-                'name': name.strip(),
-                'creator': creator_username,
-                'created_at': datetime.now().isoformat(),
-                'status': 'waiting',  # waiting, in_game, finished
-                'players': [],
-                'max_players': config.max_players,
-                'min_players': config.min_players,
-                'allow_ai_players': config.allow_ai_players,
-                'max_ai_players': config.max_ai_players,
-                'current_player_count': 0,
-                'current_ai_count': 0,
-                'game_settings': {
-                    'questions_per_round': config.questions_per_round,
-                    'voting_timeout_seconds': config.voting_timeout_seconds,
-                    'turn_timeout_seconds': config.turn_timeout_seconds,
-                    'lobby_timeout_minutes': config.lobby_timeout_minutes,
-                    'game_timeout_minutes': config.game_timeout_minutes
-                },
-                'last_activity': datetime.now().isoformat()
-            }
-            
-            logger.info(f"Created lobby data: {lobby_code} - {name}")
-            return lobby_data
-            
-        except Exception as e:
-            logger.error(f"Error creating lobby data: {e}")
-            return {}
     
     def generate_ai_player_names(self, count: int, exclude_names: Optional[list] = None) -> list:
         """
@@ -384,9 +344,9 @@ class LobbyCreator:
     
     def create_default_lobby(self) -> Tuple[bool, str, Optional[LobbyConfiguration]]:
         """
-        Create a default lobby for initial database setup.
+        Create a default lobby for initial setup.
         
-        This method is called during database initialization to ensure
+        This method is called during initialization to ensure
         there's always at least one lobby available.
         
         Returns:
@@ -414,29 +374,30 @@ class LobbyCreator:
                 'questions_per_round': 3
             })
             
-            # Import database functions to create the lobby
-            from database import create_lobby
-            
-            # Create the lobby in database
-            lobby = create_lobby(lobby_code, lobby_name)
-            
-            # Import game creator to initialize the game with AI players
-            from game.game_creator import GameCreator
-            game_creator = GameCreator()
-            
-            # Create initial game with AI players
-            ai_count = min(3, config.max_ai_players)  # 1-3 AI players
-            success, message = game_creator.create_game_with_ai(
-                lobby.id, 
-                ai_count
-            )
+            # Create the lobby in cache
+            success = create_lobby(lobby_code, lobby_name)
             
             if success:
-                logger.info(f"Created default lobby '{lobby_name}' with code '{lobby_code}' and {ai_count} AI players")
-                return True, f"Default lobby created successfully with {ai_count} AI players", config
+                # Import game creator to initialize the game with AI players
+                from game.game_creator import GameCreator
+                game_creator = GameCreator()
+                
+                # Create initial game with AI players
+                ai_count = min(3, config.max_ai_players)  # 1-3 AI players
+                game_success, message = game_creator.create_game_with_ai(
+                    lobby_code, 
+                    ai_count
+                )
+                
+                if game_success:
+                    logger.info(f"Created default lobby '{lobby_name}' with code '{lobby_code}' - {message}")
+                    return True, f"Default lobby created successfully - {message}", config
+                else:
+                    logger.warning(f"Created default lobby but failed to add AI players: {message}")
+                    return True, "Default lobby created (without AI players)", config
             else:
-                logger.warning(f"Created default lobby but failed to add AI players: {message}")
-                return True, "Default lobby created (without AI players)", config
+                logger.error(f"Failed to create default lobby in cache")
+                return False, "Failed to create default lobby", None
                     
         except ImportError as e:
             logger.error(f"Import error creating default lobby: {e}")
@@ -447,7 +408,7 @@ class LobbyCreator:
     
     def create_lobby(self, name: str, creator_username: str, 
                     custom_code: Optional[str] = None,
-                    custom_settings: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+                    custom_settings: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[str]]:
         """
         Create a new lobby with automatic AI player population.
         
@@ -461,7 +422,7 @@ class LobbyCreator:
             custom_settings: Optional custom settings
             
         Returns:
-            tuple: (success, message, lobby_data)
+            tuple: (success, message, lobby_code)
         """
         try:
             # Validate lobby name
@@ -477,56 +438,59 @@ class LobbyCreator:
             # Create configuration
             config = self.create_lobby_config(custom_settings)
             
-            # Import database functions
-            from database import create_lobby as db_create_lobby
+            # Create lobby in cache
+            success = create_lobby(lobby_code, name)
             
-            # Create lobby in database
-            lobby = db_create_lobby(lobby_code, name)
-            
-            # Import game creator to populate AI players
-            from game.game_creator import GameCreator
-            game_creator = GameCreator()
-            
-            # Determine AI count (1-3 players)
-            ai_count = random.randint(1, min(3, config.max_ai_players))
-            
-            # Create game with AI players
-            success, ai_message = game_creator.create_game_with_ai(
-                lobby.id,
-                ai_count
-            )
-            
-            if not success:
-                logger.warning(f"Failed to add AI players to lobby {lobby_code}: {ai_message}")
-            
-            # Prepare lobby data for response
-            lobby_data = self.create_lobby_data(name, creator_username, lobby_code, config)
-            lobby_data['id'] = lobby.id
-            lobby_data['ai_player_count'] = ai_count if success else 0
-            
-            message = f"Lobby '{name}' created with code '{lobby_code}'"
             if success:
-                message += f" and {ai_count} AI players"
-            
-            logger.info(message)
-            return True, message, lobby_data
+                # Import game creator to populate AI players
+                from game.game_creator import GameCreator
+                game_creator = GameCreator()
                 
-        except ImportError as e:
-            logger.error(f"Import error creating lobby: {e}")
-            return False, "Failed to import required modules", None
+                # Determine AI count (1-3 players)
+                ai_count = random.randint(1, min(3, config.max_ai_players))
+                
+                # Create game with AI players
+                game_success, ai_message = game_creator.create_game_with_ai(
+                    lobby_code,
+                    ai_count
+                )
+                
+                if not game_success:
+                    logger.warning(f"Failed to add AI players to lobby {lobby_code}: {ai_message}")
+                
+                logger.info(f"Created lobby '{name}' with code '{lobby_code}'")
+                return True, f"Lobby created successfully - {ai_message}", lobby_code
+            else:
+                return False, "Failed to create lobby in cache", None
+                
         except Exception as e:
             logger.error(f"Error creating lobby: {e}")
             return False, f"Failed to create lobby: {str(e)}", None
     
     def get_creator_status(self) -> Dict[str, Any]:
         """
-        Get current status of the lobby creator.
+        Get status information about the lobby creator.
         
         Returns:
-            Status information dictionary
+            Status dictionary
         """
-        return {
-            'code_length': self.code_length,
-            'codes_in_use': len(self.used_codes),
-            'creator_initialized': True
-        }
+        try:
+            # Import cache stats
+            from cache import get_cache_stats
+            
+            cache_stats = get_cache_stats()
+            
+            return {
+                'active': True,
+                'codes_in_use': len(self.used_codes),
+                'cache_connected': cache_stats.get('connected', False),
+                'total_lobbies': cache_stats.get('total_lobbies', 0),
+                'code_length': self.code_length
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting creator status: {e}")
+            return {
+                'active': False,
+                'error': str(e)
+            }

@@ -2,7 +2,8 @@
 Main lobby management system.
 
 Handles lobby creation, lifecycle, and coordinates between
-player management and database persistence.
+player management and cache persistence.
+Uses Redis cache only, never touches database.
 """
 
 import logging
@@ -11,21 +12,23 @@ from datetime import datetime
 from .models import LobbyData, PlayerData, LobbyListItem
 from .player_manager import PlayerManager
 from utils.constants import GAME_CONFIG
-from utils.helpers import generate_lobby_code
 
-# Import database access functions (pure data access)
-from database import (
-    get_db_session, get_lobby_by_code, create_lobby, delete_lobby, Lobby
+# Import cache operations only
+from cache import (
+    create_lobby, get_lobby_by_code, delete_lobby, lobby_exists,
+    get_players_in_lobby, LobbyCache, PlayerCache
 )
 
 logger = logging.getLogger(__name__)
 
 class LobbyManager:
-    """Main lobby management coordinator."""
+    """
+    Main lobby management coordinator.
+    Uses Redis cache only.
+    """
     
     def __init__(self):
         self.player_manager = PlayerManager()
-        self.active_lobbies: Dict[str, LobbyData] = {}  # In-memory cache
         self.session_lobby_map: Dict[str, str] = {}  # session_id -> lobby_code
     
     def create_lobby(self, name: str, custom_code: Optional[str] = None, 
@@ -43,34 +46,28 @@ class LobbyManager:
         """
         try:
             # Generate code if not provided
-            lobby_code = custom_code or generate_lobby_code()
+            lobby_code = custom_code or self._generate_lobby_code()
             
-            # Check if code already exists
-            if lobby_code in self.active_lobbies:
+            # Check if code already exists in cache
+            if lobby_exists(lobby_code):
                 return False, "Lobby code already exists", None
             
-            # Check database as well
-            with get_db_session() as session:
-                existing_lobby = get_lobby_by_code(session, lobby_code)
-                if existing_lobby:
-                    return False, "Lobby code already exists", None
-                
-                # Create lobby record in database
-                db_lobby = create_lobby(lobby_code, name, max_players)
-                
+            # Create lobby in cache
+            success = create_lobby(lobby_code, name)
+            
+            if success:
                 # Create lobby data object
                 lobby_data = LobbyData(
                     code=lobby_code,
                     name=name,
-                    created_at=db_lobby.created_at,
+                    created_at=datetime.now(),
                     max_players=max_players
                 )
                 
-                # Add to active lobbies cache
-                self.active_lobbies[lobby_code] = lobby_data
-                
                 logger.info(f"Created lobby: {lobby_code}")
                 return True, "Lobby created successfully", lobby_data
+            else:
+                return False, "Failed to create lobby in cache", None
                 
         except Exception as e:
             logger.error(f"Error creating lobby: {e}")
@@ -87,41 +84,32 @@ class LobbyManager:
             Lobby data or None if not found
         """
         try:
-            # Check cache first
-            if lobby_code in self.active_lobbies:
-                return self.active_lobbies[lobby_code]
+            # Get from cache
+            lobby_cache = get_lobby_by_code(lobby_code)
+            if not lobby_cache:
+                return None
             
-            # Load from database if not in cache
-            with get_db_session() as session:
-                db_lobby = get_lobby_by_code(session, lobby_code)
-                if not db_lobby:
-                    return None
-                
-                # Convert database lobby to lobby data
-                lobby_data = LobbyData(
-                    code=db_lobby.code,
-                    name=db_lobby.name,
-                    created_at=db_lobby.created_at,
-                    max_players=db_lobby.max_players
+            # Convert cache lobby to lobby data
+            lobby_data = LobbyData(
+                code=lobby_cache.code,
+                name=lobby_cache.name,
+                created_at=datetime.fromisoformat(lobby_cache.created_at) if lobby_cache.created_at else datetime.now(),
+                max_players=GAME_CONFIG['MAX_PLAYERS']  # Use default for now
+            )
+            
+            # Load players from cache
+            for cache_player in lobby_cache.players:
+                player_data = PlayerData(
+                    session_id=cache_player.session_id,
+                    username=cache_player.username,
+                    is_ai=cache_player.is_ai,
+                    is_spectator=cache_player.is_spectator,
+                    is_connected=cache_player.is_connected,
+                    joined_at=datetime.now()  # Cache doesn't store join time
                 )
-                
-                # Load players from database
-                from database import get_players_from_lobby
-                for db_player in get_players_from_lobby(db_lobby.id, is_spectator=False):
-                    player_data = PlayerData(
-                        session_id=db_player.session_id,
-                        username=db_player.username,
-                        is_ai=db_player.is_ai,
-                        is_spectator=db_player.is_spectator,
-                        is_connected=db_player.is_connected,
-                        joined_at=db_player.joined_at
-                    )
-                    lobby_data.players.append(player_data)
-                
-                # Add to cache
-                self.active_lobbies[lobby_code] = lobby_data
-                
-                return lobby_data
+                lobby_data.players.append(player_data)
+            
+            return lobby_data
                 
         except Exception as e:
             logger.error(f"Error getting lobby {lobby_code}: {e}")
@@ -156,8 +144,18 @@ class LobbyManager:
                 # Update session mapping
                 self.session_lobby_map[session_id] = lobby_code
                 
-                # Persist to database
-                self._sync_lobby_to_database(lobby_data)
+                # Create player cache object and add to lobby
+                player_cache = PlayerCache(
+                    session_id=player_data.session_id,
+                    username=player_data.username,
+                    is_ai=player_data.is_ai,
+                    is_spectator=player_data.is_spectator,
+                    is_connected=player_data.is_connected
+                )
+                
+                # Import cache setter to add player
+                from cache import add_player_to_lobby
+                add_player_to_lobby(lobby_code, player_cache)
                 
             return success, message, player_data
             
@@ -179,6 +177,11 @@ class LobbyManager:
             # Find player's lobby
             lobby_code = self.session_lobby_map.get(session_id)
             if not lobby_code:
+                # Try to find in cache directly
+                from cache import find_player_lobby
+                lobby_code = find_player_lobby(session_id)
+                
+            if not lobby_code:
                 return False, "Player not in any lobby", None
             
             lobby_data = self.get_lobby(lobby_code)
@@ -195,8 +198,9 @@ class LobbyManager:
                 if session_id in self.session_lobby_map:
                     del self.session_lobby_map[session_id]
                 
-                # Persist to database
-                self._sync_lobby_to_database(lobby_data)
+                # Remove from cache
+                from cache import remove_player_from_lobby
+                remove_player_from_lobby(lobby_code, session_id)
                 
                 # Clean up empty lobby
                 if len(lobby_data.players) == 0:
@@ -222,6 +226,11 @@ class LobbyManager:
             # Find player's lobby
             lobby_code = self.session_lobby_map.get(session_id)
             if not lobby_code:
+                # Try to find in cache directly
+                from cache import find_player_lobby
+                lobby_code = find_player_lobby(session_id)
+                
+            if not lobby_code:
                 return False, "Player not in any lobby", None
             
             lobby_data = self.get_lobby(lobby_code)
@@ -238,8 +247,9 @@ class LobbyManager:
                 if session_id in self.session_lobby_map:
                     del self.session_lobby_map[session_id]
                 
-                # Persist to database
-                self._sync_lobby_to_database(lobby_data)
+                # Update connection status in cache
+                from cache import update_player_connection
+                update_player_connection(lobby_code, session_id, False)
                 
             return success, message, lobby_code
             
@@ -266,8 +276,19 @@ class LobbyManager:
             success, message, ai_player_data = self.player_manager.add_ai_player(lobby_data)
             
             if success and ai_player_data:
-                # Persist to database
-                self._sync_lobby_to_database(lobby_data)
+                # Create AI player cache object and add to lobby
+                ai_player_cache = PlayerCache(
+                    session_id=ai_player_data.session_id,
+                    username=ai_player_data.username,
+                    is_ai=True,
+                    is_spectator=False,
+                    is_connected=True,
+                    ai_personality=getattr(ai_player_data, 'ai_personality', None)
+                )
+                
+                # Add to cache
+                from cache import add_player_to_lobby
+                add_player_to_lobby(lobby_code, ai_player_cache)
                 
             return success, message, ai_player_data
             
@@ -285,7 +306,19 @@ class LobbyManager:
         Returns:
             Lobby code or None
         """
-        return self.session_lobby_map.get(session_id)
+        # Check local mapping first
+        lobby_code = self.session_lobby_map.get(session_id)
+        
+        if not lobby_code:
+            # Try to find in cache
+            from cache import find_player_lobby
+            lobby_code = find_player_lobby(session_id)
+            
+            # Update local mapping if found
+            if lobby_code:
+                self.session_lobby_map[session_id] = lobby_code
+        
+        return lobby_code
     
     def get_active_lobbies(self) -> List[LobbyListItem]:
         """
@@ -294,19 +327,27 @@ class LobbyManager:
         Returns:
             List of lobby info
         """
-        lobby_list = []
-        for lobby_data in self.active_lobbies.values():
-            if lobby_data.is_active:
+        try:
+            from cache import get_all_active_lobbies
+            
+            lobby_list = []
+            active_lobbies = get_all_active_lobbies()
+            
+            for lobby_cache in active_lobbies:
                 lobby_list.append(LobbyListItem(
-                    code=lobby_data.code,
-                    name=lobby_data.name,
-                    player_count=lobby_data.player_count,
-                    max_players=lobby_data.max_players,
-                    is_full=lobby_data.is_full,
-                    created_at=lobby_data.created_at
+                    code=lobby_cache.code,
+                    name=lobby_cache.name,
+                    player_count=len(lobby_cache.get_connected_players()),
+                    max_players=GAME_CONFIG['MAX_PLAYERS'],
+                    is_full=len(lobby_cache.get_connected_players()) >= GAME_CONFIG['MAX_PLAYERS'],
+                    created_at=datetime.fromisoformat(lobby_cache.created_at) if lobby_cache.created_at else datetime.now()
                 ))
-        
-        return lobby_list
+            
+            return lobby_list
+            
+        except Exception as e:
+            logger.error(f"Error getting active lobbies: {e}")
+            return []
     
     def cleanup_inactive_lobbies(self, hours_inactive: int = GAME_CONFIG['LOBBY_CLEANUP_HOURS']) -> int:
         """
@@ -319,24 +360,11 @@ class LobbyManager:
             Number of lobbies cleaned up
         """
         try:
-            from datetime import timedelta
+            from cache import cleanup_expired_data
             
-            cleaned_count = 0
-            current_time = datetime.utcnow()
-            cutoff_time = current_time - timedelta(hours=hours_inactive)
-            
-            # Find lobbies to clean up
-            lobbies_to_cleanup = []
-            for lobby_code, lobby_data in self.active_lobbies.items():
-                # Clean up if old and empty, or very old
-                if (lobby_data.created_at < cutoff_time and len(lobby_data.players) == 0) or \
-                   (lobby_data.created_at < current_time - timedelta(hours=hours_inactive * 2)):
-                    lobbies_to_cleanup.append(lobby_code)
-            
-            # Clean up lobbies
-            for lobby_code in lobbies_to_cleanup:
-                self._cleanup_lobby(lobby_code)
-                cleaned_count += 1
+            # Use cache cleanup function
+            result = cleanup_expired_data()
+            cleaned_count = result.get('cleaned', 0)
             
             logger.info(f"Cleaned up {cleaned_count} inactive lobbies")
             return cleaned_count
@@ -345,24 +373,15 @@ class LobbyManager:
             logger.error(f"Error during lobby cleanup: {e}")
             return 0
     
-    def _sync_lobby_to_database(self, lobby_data: LobbyData):
-        """
-        Synchronize lobby data to database.
+    def _generate_lobby_code(self, length: int = 6) -> str:
+        """Generate a random lobby code."""
+        import random
+        import string
         
-        Args:
-            lobby_data: Lobby data to sync
-        """
-        try:
-            with get_db_session() as session:
-                # Update lobby record (players are managed separately in the database)
-                # Note: Using database session management instead of update_lobby_record
-                lobby = session.query(Lobby).filter_by(code=lobby_data.code).first()
-                if lobby:
-                    lobby.name = lobby_data.name
-                    lobby.max_players = lobby_data.max_players
-                
-        except Exception as e:
-            logger.error(f"Error syncing lobby to database: {e}")
+        # Use mix of letters and numbers for better readability
+        # Exclude easily confused characters: 0, O, I, 1
+        chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+        return ''.join(random.choices(chars, k=length))
     
     def _cleanup_lobby(self, lobby_code: str):
         """
@@ -372,10 +391,6 @@ class LobbyManager:
             lobby_code: Code of the lobby to clean up
         """
         try:
-            # Remove from cache
-            if lobby_code in self.active_lobbies:
-                del self.active_lobbies[lobby_code]
-            
             # Clean up session mappings
             sessions_to_remove = []
             for session_id, mapped_lobby_code in self.session_lobby_map.items():
@@ -385,10 +400,9 @@ class LobbyManager:
             for session_id in sessions_to_remove:
                 del self.session_lobby_map[session_id]
             
-            # Remove from database
-            lobby_to_delete = get_lobby_by_code(lobby_code)
-            if lobby_to_delete:
-                delete_lobby(lobby_to_delete.id)
+            # Remove from cache (includes all related data)
+            from cache import cleanup_lobby_data
+            cleanup_lobby_data(lobby_code)
             
             logger.info(f"Cleaned up lobby {lobby_code}")
             
