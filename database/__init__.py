@@ -34,7 +34,7 @@ from .getters import (
     get_player_by_session_id,
     get_player_by_id,
     get_player_by_username,
-    get_active_lobbies,
+    get_open_lobbies,
     get_all_lobbies,
     get_game_statistics,
     get_active_game_session,
@@ -47,15 +47,15 @@ from .getters import (
     get_lobby_by_player_session,
     is_username_taken,
     is_lobby_code_taken,
-    can_join_lobby,
-    get_lobby_player_count
+    can_join_lobby
 )
 
 # Import setter functions
 from .setters import (
     create_lobby,
     create_player,
-    update_lobby_state,
+    set_lobby_active,
+    set_lobby_open,
     update_player_connection,
     create_game_session,
     create_game_message,
@@ -101,7 +101,7 @@ __all__ = [
     "get_player_by_session_id",
     "get_player_by_id", 
     "get_player_by_username",
-    "get_active_lobbies",
+    "get_open_lobbies",
     "get_all_lobbies",
     "get_game_statistics",
     "get_active_game_session",
@@ -115,12 +115,12 @@ __all__ = [
     "is_username_taken",
     "is_lobby_code_taken",
     "can_join_lobby",
-    "get_lobby_player_count",
     
     # Setters
     "create_lobby",
     "create_player",
-    "update_lobby_state", 
+    "set_lobby_active",
+    "set_lobby_open", 
     "update_player_connection",
     "create_game_session",
     "create_game_message",

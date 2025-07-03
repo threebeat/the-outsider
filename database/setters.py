@@ -18,13 +18,12 @@ logger = logging.getLogger(__name__)
 # UNIVERSAL SETTERS - ALL WRITE OPERATIONS
 # ==============================================================================
 
-def create_lobby(code: str, name: str, max_players: int = 8) -> Lobby:
-    """Create a new lobby."""
+def create_lobby(code: str, name: str) -> Lobby:
+    """Create a new lobby with fixed 12 player limit."""
     with get_db_session() as session:
         lobby = Lobby(
             code=code,
-            name=name,
-            max_players=max_players
+            name=name
         )
         session.add(lobby)
         session.flush()  # Get the ID without committing
@@ -49,14 +48,23 @@ def create_player(lobby_id: int, session_id: str, username: str,
         logger.info(f"Created player '{username}' in lobby {lobby_id} (AI: {is_ai})")
         return player
 
-def update_lobby_state(lobby_id: int, new_state: str):
-    """Update lobby state."""
+def set_lobby_active(lobby_id: int):
+    """Set lobby to active state (game in progress, no joining)."""
     with get_db_session() as session:
         lobby = session.query(Lobby).filter_by(id=lobby_id).first()
         if lobby:
-            lobby.state = new_state
+            lobby.state = 'active'
             lobby.update_activity()
-            logger.info(f"Updated lobby {lobby.code} state to: {new_state}")
+            logger.info(f"Set lobby {lobby.code} to active state")
+
+def set_lobby_open(lobby_id: int):
+    """Set lobby to open state (players can join)."""
+    with get_db_session() as session:
+        lobby = session.query(Lobby).filter_by(id=lobby_id).first()
+        if lobby:
+            lobby.state = 'open'
+            lobby.update_activity()
+            logger.info(f"Set lobby {lobby.code} to open state")
 
 def update_player_connection(player_id: int, connected: bool):
     """Update player connection status."""
@@ -99,7 +107,7 @@ def create_game_session(lobby_id: int, location: str) -> GameSession:
         session.flush()
         
         # Update lobby
-        lobby.state = 'playing'
+        lobby.state = 'active'
         lobby.location = location
         lobby.started_at = datetime.now(timezone.utc)
         lobby.current_turn = 0
@@ -257,7 +265,7 @@ def reset_lobby_for_new_game(lobby_id: int):
     with get_db_session() as session:
         lobby = session.query(Lobby).filter_by(id=lobby_id).first()
         if lobby:
-            lobby.state = 'waiting'
+            lobby.state = 'open'
             lobby.location = None
             lobby.current_turn = 0
             lobby.question_count = 0

@@ -117,11 +117,11 @@ def get_player_by_username(lobby_id: int, username: str) -> Optional[Player]:
     """Get a player by username in a specific lobby."""
     return get_player(lobby_id=lobby_id, username=username, is_connected=True)
 
-def get_active_lobbies() -> List[Lobby]:
-    """Get all active lobbies."""
+def get_open_lobbies() -> List[Lobby]:
+    """Get all open lobbies that players can join."""
     with get_db_session() as session:
         return session.query(Lobby).filter(
-            Lobby.state.in_(['waiting', 'playing'])
+            Lobby.state == 'open'
         ).all()
 
 def get_all_lobbies() -> List[Lobby]:
@@ -230,11 +230,12 @@ def is_lobby_code_taken(code: str) -> bool:
         return session.query(Lobby).filter_by(code=code).first() is not None
 
 def can_join_lobby(lobby_id: int) -> bool:
-    """Check if a lobby has space for another player."""
+    """Check if a lobby is open and has space for another player."""
     from utils.constants import GAME_CONFIG
+    
+    lobby = get_lobby_by_id(lobby_id)
+    if not lobby or lobby.state != 'open':
+        return False
+        
     current_players = len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))
     return current_players < GAME_CONFIG['MAX_PLAYERS']
-
-def get_lobby_player_count(lobby_id: int) -> int:
-    """Get current player count for a lobby (excluding spectators)."""
-    return len(get_players(lobby_id=lobby_id, is_connected=True, is_spectator=False))

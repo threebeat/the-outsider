@@ -418,7 +418,7 @@ class LobbyCreator:
             from database import create_lobby
             
             # Create the lobby in database
-            lobby = create_lobby(lobby_code, lobby_name, config.max_players)
+            lobby = create_lobby(lobby_code, lobby_name)
             
             # Import game creator to initialize the game with AI players
             from game.game_creator import GameCreator
@@ -481,7 +481,7 @@ class LobbyCreator:
             from database import create_lobby as db_create_lobby
             
             # Create lobby in database
-            lobby = db_create_lobby(lobby_code, name, config.max_players)
+            lobby = db_create_lobby(lobby_code, name)
             
             # Import game creator to populate AI players
             from game.game_creator import GameCreator

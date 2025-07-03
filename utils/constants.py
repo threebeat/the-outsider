@@ -22,12 +22,10 @@ AI_NAMES = [
     "Quinn", "River", "Sage", "Taylor", "Avery", "Cameron", "Dakota", "Emery"
 ]
 
-# Game state constants
-GAME_STATES = {
-    'WAITING': 'waiting',
-    'PLAYING': 'playing', 
-    'VOTING': 'voting',
-    'FINISHED': 'finished'
+# Lobby state constants
+LOBBY_STATES = {
+    'OPEN': 'open',      # Players can join
+    'ACTIVE': 'active'   # Game in progress, no joining allowed
 }
 
 # Message types
@@ -39,22 +37,19 @@ MESSAGE_TYPES = {
     'AI_THINKING': 'ai_thinking'
 }
 
+# Lobby constants
+MAX_PLAYERS_PER_LOBBY = 12  # Total players including 1-3 AI players
+
 # Game configuration
 GAME_CONFIG = {
     'MAX_QUESTIONS': 5,
     'MIN_PLAYERS': 1,
-    'MAX_PLAYERS': 12,  # Total players including 1-3 AI players
-    'DEFAULT_AI_DIFFICULTY': 'normal',
+    'MAX_PLAYERS': MAX_PLAYERS_PER_LOBBY,
     'LOBBY_CLEANUP_HOURS': 24,
     'GAME_RESET_DELAY': 10  # seconds
 }
 
-# AI difficulty levels
-AI_DIFFICULTIES = {
-    'EASY': 'easy',
-    'NORMAL': 'normal', 
-    'HARD': 'hard'
-}
+# AI difficulty removed - not a feature we want
 
 # AI personality types
 AI_PERSONALITIES = [

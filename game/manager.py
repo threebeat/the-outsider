@@ -41,8 +41,8 @@ class GameManager:
                 if not lobby:
                     return False, "Lobby not found", None
                 
-                if lobby.state != 'waiting':
-                    return False, "Game already in progress", None
+                if lobby.state != 'open':
+                    return False, "Lobby is not accepting new players", None
                 
                 from database import get_players_from_lobby
                 if len(get_players_from_lobby(lobby.id, is_spectator=False)) < 3:
@@ -71,7 +71,7 @@ class GameManager:
                     'location': location,
                     'current_player': turn_manager.get_current_player(),
                     'turn_order': turn_manager.get_turn_order(),
-                    'game_state': 'playing'
+                    'lobby_state': 'active'
                 }
                 
                 logger.info(f"Started game in lobby {lobby_code} with location {location}")
