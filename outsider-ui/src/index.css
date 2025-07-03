@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom base styles for minimalist black and white aesthetic */
+@layer base {
+  body {
+    @apply bg-outsider-black text-outsider-white antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-outsider-gray-900;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-outsider-gray-600 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-outsider-gray-500;
+  }
+
+  /* Selection styles */
+  ::selection {
+    @apply bg-outsider-white text-outsider-black;
+  }
+
+  /* Focus styles */
+  *:focus {
+    @apply outline-none;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    @apply ring-2 ring-outsider-white ring-offset-2 ring-offset-outsider-black;
+  }
+}
+
+/* Component styles */
+@layer components {
+  .btn-primary {
+    @apply px-6 py-3 bg-outsider-white text-outsider-black font-medium 
+           rounded-none border border-outsider-white 
+           hover:bg-outsider-black hover:text-outsider-white 
+           transition-all duration-300 ease-in-out;
+  }
+
+  .btn-secondary {
+    @apply px-6 py-3 bg-transparent text-outsider-white font-medium 
+           rounded-none border border-outsider-gray-500 
+           hover:border-outsider-white hover:bg-outsider-white hover:text-outsider-black 
+           transition-all duration-300 ease-in-out;
+  }
+
+  .input-primary {
+    @apply w-full px-4 py-3 bg-transparent border border-outsider-gray-600 
+           text-outsider-white placeholder-outsider-gray-500
+           focus:border-outsider-white transition-colors duration-200;
+  }
+
+  .sidebar-item {
+    @apply px-4 py-3 border-l-2 border-transparent 
+           hover:border-outsider-white hover:bg-outsider-gray-900 
+           transition-all duration-200 cursor-pointer;
+  }
+
+  .sidebar-item-active {
+    @apply border-outsider-white bg-outsider-gray-900;
+  }
+}
