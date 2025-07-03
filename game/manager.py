@@ -11,7 +11,7 @@ from .turn_manager import TurnManager
 from .question_manager import QuestionManager
 from .answer_manager import AnswerManager
 from .vote_manager import VoteManager
-from database import get_db_session, Lobby, GameSession, GameStatistics, start_game_session
+from database import get_db_session, Lobby, GameSession, GameStatistics, create_game_session
 from utils.constants import LOCATIONS
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ class GameManager:
                 if lobby.state != 'waiting':
                     return False, "Game already in progress", None
                 
-                from database_getters import get_players_from_lobby
+                from database import get_players_from_lobby
                 if len(get_players_from_lobby(lobby.id, is_spectator=False)) < 3:
                     return False, "Need at least 3 players to start", None
                 
@@ -53,7 +53,7 @@ class GameManager:
                 location = random.choice(LOCATIONS)
                 
                 # Start game session in database
-                game_session = start_game_session(session, lobby, location)
+                game_session = create_game_session(lobby.id, location)
                 
                 # Initialize turn manager
                 turn_manager = TurnManager(lobby_code)
@@ -242,7 +242,7 @@ class GameManager:
             tuple: (success, message, result_data)
         """
         try:
-            from database_getters import get_players_from_lobby
+            from database import get_players_from_lobby
             # Find lobby and validate
             lobby_code = self._find_player_lobby(voter_sid)
             if not lobby_code:
@@ -373,7 +373,7 @@ class GameManager:
     
     def _select_outsider_player(self, lobby) -> str:
         """Select the AI outsider player for the game."""
-        from database_getters import get_players_from_lobby
+        from database import get_players_from_lobby
         # For now, select first AI player
         ai_players = get_players_from_lobby(lobby.id, is_ai=True)
         if ai_players:

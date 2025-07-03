@@ -9,10 +9,10 @@ import logging
 import random
 from typing import Optional, List, Any
 
-from database_getters import (
-    get_lobby_by_id, get_players, get_players_from_lobby
+from database import (
+    get_lobby_by_id, get_players, get_players_from_lobby,
+    create_player, create_game_session
 )
-from database_setters import create_player, create_game_session
 from ai.name_generator import NameGenerator
 from utils.constants import LOCATIONS, AI_PERSONALITIES
 

@@ -415,7 +415,7 @@ class LobbyCreator:
             })
             
             # Import database functions to create the lobby
-            from database_setters import create_lobby
+            from database import create_lobby
             
             # Create the lobby in database
             lobby = create_lobby(lobby_code, lobby_name, config.max_players)
@@ -478,7 +478,7 @@ class LobbyCreator:
             config = self.create_lobby_config(custom_settings)
             
             # Import database functions
-            from database_setters import create_lobby as db_create_lobby
+            from database import create_lobby as db_create_lobby
             
             # Create lobby in database
             lobby = db_create_lobby(lobby_code, name, config.max_players)

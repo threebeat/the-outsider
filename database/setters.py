@@ -9,7 +9,8 @@ import logging
 from typing import Optional
 from datetime import datetime, timezone
 
-from database import get_db_session, Lobby, Player, GameMessage, Vote, GameSession, GameStatistics
+from .config import get_db_session
+from .models import Lobby, Player, GameMessage, Vote, GameSession, GameStatistics
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def create_game_session(lobby_id: int, location: str) -> GameSession:
         session_number = (last_session.session_number + 1) if last_session else 1
         
         # Count players
-        from database_getters import get_players_from_lobby
+        from .getters import get_players_from_lobby
         human_count = len(get_players_from_lobby(lobby_id, is_ai=False, is_spectator=False))
         ai_count = len(get_players_from_lobby(lobby_id, is_ai=True))
         

@@ -9,7 +9,8 @@ import logging
 from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 
-from database import get_db_session, Lobby, Player, GameMessage, Vote, GameSession, GameStatistics
+from .config import get_db_session
+from .models import Lobby, Player, GameMessage, Vote, GameSession, GameStatistics
 
 logger = logging.getLogger(__name__)
 

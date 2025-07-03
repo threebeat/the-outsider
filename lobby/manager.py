@@ -15,8 +15,7 @@ from utils.helpers import generate_lobby_code
 
 # Import database access functions (pure data access)
 from database import (
-    get_db_session, create_lobby_record, get_lobby_by_code, 
-    update_lobby_record, delete_lobby_record
+    get_db_session, get_lobby_by_code, create_lobby, delete_lobby, Lobby
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +56,7 @@ class LobbyManager:
                     return False, "Lobby code already exists", None
                 
                 # Create lobby record in database
-                db_lobby = create_lobby_record(session, lobby_code, name, max_players)
+                db_lobby = create_lobby(lobby_code, name, max_players)
                 
                 # Create lobby data object
                 lobby_data = LobbyData(
@@ -107,7 +106,7 @@ class LobbyManager:
                 )
                 
                 # Load players from database
-                from database_getters import get_players_from_lobby
+                from database import get_players_from_lobby
                 for db_player in get_players_from_lobby(db_lobby.id, is_spectator=False):
                     player_data = PlayerData(
                         session_id=db_player.session_id,
@@ -356,11 +355,11 @@ class LobbyManager:
         try:
             with get_db_session() as session:
                 # Update lobby record (players are managed separately in the database)
-                update_lobby_record(session, lobby_data.code, {
-                    'name': lobby_data.name,
-                    'max_players': lobby_data.max_players,
-                    'is_active': lobby_data.is_active
-                })
+                # Note: Using database session management instead of update_lobby_record
+                lobby = session.query(Lobby).filter_by(code=lobby_data.code).first()
+                if lobby:
+                    lobby.name = lobby_data.name
+                    lobby.max_players = lobby_data.max_players
                 
         except Exception as e:
             logger.error(f"Error syncing lobby to database: {e}")
@@ -387,8 +386,9 @@ class LobbyManager:
                 del self.session_lobby_map[session_id]
             
             # Remove from database
-            with get_db_session() as session:
-                delete_lobby_record(session, lobby_code)
+            lobby_to_delete = get_lobby_by_code(lobby_code)
+            if lobby_to_delete:
+                delete_lobby(lobby_to_delete.id)
             
             logger.info(f"Cleaned up lobby {lobby_code}")
             
