@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, DateTime, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, DateTime, Float, Index
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
@@ -23,19 +23,39 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Database configuration
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///game.db')
+DATABASE_URL = os.getenv('DATABASE_URL')
+if not DATABASE_URL:
+    # Default to PostgreSQL for production, SQLite for development
+    if os.getenv('RENDER'):
+        logger.error("DATABASE_URL not set in production environment!")
+        raise ValueError("DATABASE_URL environment variable is required")
+    else:
+        DATABASE_URL = 'sqlite:///game.db'
+        logger.info("Using SQLite for development")
+
+# Handle Render's PostgreSQL URL format
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
 
 # Create database engine
 if DATABASE_URL.startswith('sqlite'):
     engine = create_engine(
         DATABASE_URL,
+        echo=os.getenv('SQL_DEBUG', 'false').lower() == 'true',
         connect_args={"check_same_thread": False},
-        poolclass=NullPool,
-        echo=False  # Set to True for SQL debugging
+        poolclass=NullPool
     )
 else:
-    # PostgreSQL configuration for production
-    engine = create_engine(DATABASE_URL, poolclass=NullPool, echo=False)
+    # PostgreSQL configuration
+    engine = create_engine(
+        DATABASE_URL,
+        echo=os.getenv('SQL_DEBUG', 'false').lower() == 'true',
+        pool_pre_ping=True,
+        pool_size=20,
+        max_overflow=30,
+        pool_timeout=30,
+        pool_recycle=3600,  # Recycle connections after 1 hour
+    )
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -76,6 +96,10 @@ class Lobby(Base):
     question_count = Column(Integer, default=0)
     max_questions = Column(Integer, default=5)
     
+    # AI Integration
+    ai_difficulty = Column(String(20), default='normal')  # easy, normal, hard
+    outsider_player_id = Column(Integer, ForeignKey('players.id'), nullable=True)
+    
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -83,10 +107,17 @@ class Lobby(Base):
     last_activity = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    players = relationship('Player', back_populates='lobby', cascade='all, delete-orphan')
+    players = relationship('Player', back_populates='lobby', cascade='all, delete-orphan', foreign_keys='Player.lobby_id')
     messages = relationship('GameMessage', back_populates='lobby', cascade='all, delete-orphan')
     votes = relationship('Vote', back_populates='lobby', cascade='all, delete-orphan')
     sessions = relationship('GameSession', back_populates='lobby', cascade='all, delete-orphan')
+    outsider = relationship('Player', foreign_keys=[outsider_player_id], post_update=True)
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_lobby_state_activity', 'state', 'last_activity'),
+        Index('idx_lobby_code_state', 'code', 'state'),
+    )
     
     def __repr__(self):
         return f"<Lobby(code='{self.code}', state='{self.state}')>"
@@ -120,15 +151,19 @@ class Player(Base):
     username = Column(String(50), nullable=False)
     
     # Player type and status
-    is_ai = Column(Boolean, default=False)
-    is_spectator = Column(Boolean, default=False)
-    is_connected = Column(Boolean, default=True)
-    is_outsider = Column(Boolean, default=False)  # True if this player is the outsider
+    is_ai = Column(Boolean, default=False, nullable=False)
+    is_spectator = Column(Boolean, default=False, nullable=False)
+    is_connected = Column(Boolean, default=True, nullable=False)
+    is_outsider = Column(Boolean, default=False, nullable=False)
     
     # Game statistics
     questions_asked = Column(Integer, default=0)
     questions_answered = Column(Integer, default=0)
     votes_received = Column(Integer, default=0)
+    
+    # AI-specific fields
+    ai_personality = Column(String(50), nullable=True)  # aggressive, cautious, analytical, etc.
+    ai_strategy = Column(Text, nullable=True)  # JSON string for AI strategy data
     
     # Timestamps
     joined_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -138,11 +173,18 @@ class Player(Base):
     lobby_id = Column(Integer, ForeignKey('lobbies.id'), nullable=False)
     
     # Relationships
-    lobby = relationship('Lobby', back_populates='players')
+    lobby = relationship('Lobby', back_populates='players', foreign_keys=[lobby_id])
     sent_messages = relationship('GameMessage', foreign_keys='GameMessage.sender_id', back_populates='sender')
     received_messages = relationship('GameMessage', foreign_keys='GameMessage.target_id', back_populates='target')
     votes_cast = relationship('Vote', foreign_keys='Vote.voter_id', back_populates='voter')
     votes_against = relationship('Vote', foreign_keys='Vote.target_id', back_populates='target')
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_player_lobby_session', 'lobby_id', 'session_id'),
+        Index('idx_player_lobby_username', 'lobby_id', 'username'),
+        Index('idx_player_connected', 'is_connected', 'last_seen'),
+    )
     
     def __repr__(self):
         return f"<Player(username='{self.username}', is_ai={self.is_ai})>"
@@ -158,7 +200,7 @@ class GameMessage(Base):
     
     id = Column(Integer, primary_key=True)
     content = Column(Text, nullable=False)
-    message_type = Column(String(20), default='chat')  # chat, question, answer, system
+    message_type = Column(String(20), default='chat')  # chat, question, answer, system, ai_thinking
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -171,11 +213,18 @@ class GameMessage(Base):
     # Question/answer tracking
     is_question = Column(Boolean, default=False)
     question_number = Column(Integer, nullable=True)
+    confidence_score = Column(Float, nullable=True)  # AI confidence in response
     
     # Relationships
     lobby = relationship('Lobby', back_populates='messages')
     sender = relationship('Player', foreign_keys=[sender_id], back_populates='sent_messages')
     target = relationship('Player', foreign_keys=[target_id], back_populates='received_messages')
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_message_lobby_created', 'lobby_id', 'created_at'),
+        Index('idx_message_type_lobby', 'message_type', 'lobby_id'),
+    )
     
     def __repr__(self):
         return f"<GameMessage(type='{self.message_type}', sender='{self.sender.username if self.sender else 'System'}')>"
@@ -198,11 +247,18 @@ class Vote(Base):
     # Vote metadata
     vote_round = Column(Integer, default=1)
     confidence = Column(Float, nullable=True)  # Optional confidence level (0.0-1.0)
+    reasoning = Column(Text, nullable=True)  # AI reasoning for vote
     
     # Relationships
     lobby = relationship('Lobby', back_populates='votes')
     voter = relationship('Player', foreign_keys=[voter_id], back_populates='votes_cast')
     target = relationship('Player', foreign_keys=[target_id], back_populates='votes_against')
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_vote_lobby_round', 'lobby_id', 'vote_round'),
+        Index('idx_vote_cast_at', 'cast_at'),
+    )
     
     def __repr__(self):
         return f"<Vote(voter='{self.voter.username}', target='{self.target.username}')>"
@@ -233,6 +289,10 @@ class GameSession(Base):
     total_votes = Column(Integer, default=0)
     duration_seconds = Column(Integer, nullable=True)
     
+    # AI Analysis
+    ai_performance_score = Column(Float, nullable=True)  # How well AI performed
+    human_suspicion_level = Column(Float, nullable=True)  # How suspicious humans were
+    
     # Timestamps
     started_at = Column(DateTime(timezone=True), nullable=False)
     ended_at = Column(DateTime(timezone=True), nullable=True)
@@ -244,6 +304,12 @@ class GameSession(Base):
     # Relationships
     lobby = relationship('Lobby', back_populates='sessions')
     eliminated_player = relationship('Player', foreign_keys=[eliminated_player_id])
+    
+    # Indexes
+    __table_args__ = (
+        Index('idx_session_lobby_started', 'lobby_id', 'started_at'),
+        Index('idx_session_winner_ended', 'winner', 'ended_at'),
+    )
     
     def __repr__(self):
         return f"<GameSession(session={self.session_number}, winner='{self.winner}')>"
@@ -265,6 +331,11 @@ class GameStatistics(Base):
     avg_game_duration = Column(Float, nullable=True)  # Average duration in seconds
     avg_questions_per_game = Column(Float, nullable=True)
     human_win_rate = Column(Float, nullable=True)  # Percentage
+    avg_players_per_game = Column(Float, nullable=True)
+    
+    # Advanced analytics
+    most_popular_locations = Column(Text, nullable=True)  # JSON array
+    ai_difficulty_stats = Column(Text, nullable=True)  # JSON object
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -284,8 +355,9 @@ class GameStatistics(Base):
 def init_database():
     """Initialize the database and create all tables."""
     try:
+        # Create all tables
         Base.metadata.create_all(bind=engine)
-        logger.info("Database initialized successfully")
+        logger.info("Database tables created successfully")
         
         # Create default statistics entry
         with get_db_session() as session:
@@ -331,7 +403,7 @@ def add_player_to_lobby(session, lobby: Lobby, session_id: str, username: str,
         logger.info(f"Reconnected player: {username}")
         return existing_player
     
-    # Check username uniqueness
+    # Check username uniqueness in active players
     username_taken = session.query(Player).filter_by(
         lobby_id=lobby.id,
         username=username,
@@ -340,6 +412,11 @@ def add_player_to_lobby(session, lobby: Lobby, session_id: str, username: str,
     
     if username_taken:
         raise ValueError(f"Username '{username}' is already taken")
+    
+    # Check lobby capacity
+    active_count = len(lobby.active_players)
+    if active_count >= lobby.max_players:
+        raise ValueError(f"Lobby is full ({lobby.max_players} players max)")
     
     player = Player(
         lobby_id=lobby.id,
@@ -463,6 +540,7 @@ def reset_lobby(session, lobby: Lobby):
     lobby.location = None
     lobby.current_turn = 0
     lobby.question_count = 0
+    lobby.outsider_player_id = None
     lobby.started_at = None
     lobby.ended_at = None
     lobby.update_activity()
@@ -483,6 +561,22 @@ def reset_lobby(session, lobby: Lobby):
 def get_game_statistics(session, lobby_code: str = 'main') -> Optional[GameStatistics]:
     """Get game statistics for a lobby."""
     return session.query(GameStatistics).filter_by(lobby_code=lobby_code).first()
+
+def cleanup_inactive_lobbies(session, hours_inactive: int = 24):
+    """Clean up lobbies that have been inactive for too long."""
+    from datetime import timedelta
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_inactive)
+    
+    inactive_lobbies = session.query(Lobby).filter(
+        Lobby.last_activity < cutoff_time,
+        Lobby.state.in_(['finished', 'waiting'])
+    ).all()
+    
+    for lobby in inactive_lobbies:
+        logger.info(f"Cleaning up inactive lobby: {lobby.code}")
+        session.delete(lobby)
+    
+    return len(inactive_lobbies)
 
 if __name__ == "__main__":
     # Initialize database when run directly
